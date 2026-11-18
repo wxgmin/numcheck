@@ -48,20 +48,29 @@ def _looks_like_footnote(text: str) -> bool:
 
 
 def _walk_shape(slide_idx: int, shape) -> list[DeckNumber]:
-    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-        out: list[DeckNumber] = []
-        for child in shape.shapes:
-            out.extend(_walk_shape(slide_idx, child))
-        return out
+    try:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            out: list[DeckNumber] = []
+            for child in shape.shapes:
+                out.extend(_walk_shape(slide_idx, child))
+            return out
 
-    if shape.has_table:
-        return _extract_table(slide_idx, shape)
-    if shape.has_chart:
-        return extract_chart_numbers(slide_idx, shape)
-    if shape.has_text_frame:
-        if _looks_like_footnote(shape.text_frame.text):
-            return []
-        return _extract_text_shape(slide_idx, shape)
+        # `has_table` / `has_chart` only exist on GraphicFrame shapes; pictures,
+        # media, and connectors do not have them, so use getattr guards.
+        if getattr(shape, "has_table", False):
+            return _extract_table(slide_idx, shape)
+        if getattr(shape, "has_chart", False):
+            try:
+                return extract_chart_numbers(slide_idx, shape)
+            except Exception:
+                return []
+        if getattr(shape, "has_text_frame", False):
+            if _looks_like_footnote(shape.text_frame.text):
+                return []
+            return _extract_text_shape(slide_idx, shape)
+    except Exception:
+        # One malformed shape should never abort the whole deck review.
+        return []
     return []
 
 

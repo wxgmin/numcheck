@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,7 +97,7 @@ def load_config(path: str | Path | None = None) -> Config:
         cfg.llm_api_key = str(llm_cfg.get("api_key", cfg.llm_api_key))
 
     # Environment variables override the file.
-    env = __import__("os").environ
+    env = os.environ
     cfg.llm = env.get("NUMCHECK_LLM_PROVIDER", cfg.llm)
     cfg.model_name = env.get("NUMCHECK_LLM_MODEL", cfg.model_name)
     cfg.llm_base_url = env.get("NUMCHECK_LLM_BASE_URL", cfg.llm_base_url)

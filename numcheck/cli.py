@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from numcheck.config import load_config
 from numcheck.llm import PROVIDERS
@@ -52,9 +53,25 @@ def main(argv: list[str] | None = None) -> int:
             cfg.llm_base_url = args.llm_base_url
         if args.llm_api_key is not None:
             cfg.llm_api_key = args.llm_api_key
+
+        if not Path(args.deck).is_file():
+            print(f"error: deck file not found: {args.deck}", file=sys.stderr)
+            return 2
+        for model in args.models:
+            if not Path(model).is_file():
+                print(f"error: model file not found: {model}", file=sys.stderr)
+                return 2
+        if args.model_old and not Path(args.model_old).is_file():
+            print(f"error: old model file not found: {args.model_old}", file=sys.stderr)
+            return 2
+
         from numcheck.runner import run_review
 
-        result = run_review(args.deck, args.models, args.model_old, args.out_dir, args.annotate, cfg, args.ocr)
+        try:
+            result = run_review(args.deck, args.models, args.model_old, args.out_dir, args.annotate, cfg, args.ocr)
+        except Exception as exc:  # noqa: BLE001 - surface a friendly CLI error
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         _print_summary(result)
         return 0
 
