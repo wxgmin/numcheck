@@ -1,0 +1,58 @@
+[tolerance]
+relative = 0.006
+absolute = 0.5
+
+[matching]
+value_weight = 0.6
+label_weight = 0.4
+ambiguity_band = 0.03
+
+[llm]
+# Provider for fuzzy label disambiguation only. All numeric comparison stays
+# deterministic. Options: off | openai | anthropic | openai-compatible | ollama
+provider = "off"
+model = "gpt-4o-mini"
+# base_url is for openai-compatible endpoints (e.g. a LiteLLM proxy) or ollama.
+base_url = ""
+# api_key is optional; providers otherwise read their standard env var
+# (OPENAI_API_KEY / ANTHROPIC_API_KEY) or NUMCHECK_LLM_API_KEY.
+api_key = ""
+
+key_metrics = [
+    "revenue",
+    "ebitda",
+    "ebit",
+    "eps",
+    "net income",
+    "enterprise value",
+    "equity value",
+    "wacc",
+    "free cash flow",
+    "fcf",
+]
+
+[unit_scales]
+k = 1000.0
+m = 1000000.0
+mm = 1000000.0
+bn = 1000000000.0
+b = 1000000000.0
+t = 1000000000000.0
+
+[abbreviations]
+rev = "revenue"
+ebitda = "ebitda"
+ebit = "ebit"
+ni = "net income"
+eps = "eps"
+ev = "enterprise value"
+eqv = "equity value"
+"eq val" = "equity value"
+fcf = "free cash flow"
+gm = "gross margin"
+cogs = "cogs"
+opex = "opex"
+capex = "capex"
+nwc = "net working capital"
+"d&a" = "d&a"
+"share count" = "shares outstanding"

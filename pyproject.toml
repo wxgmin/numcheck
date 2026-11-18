@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numcheck"
+version = "0.1.0"
+description = "Investment banking pitchbook number-check tool (PPTX vs XLSX)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1",
+    "pandas>=2.0",
+    "lxml>=4.9",
+    "rapidfuzz>=3.0",
+    "openai>=1.0",
+    "jinja2>=3.1",
+]
+
+[project.scripts]
+numcheck = "numcheck.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["numcheck*"]
