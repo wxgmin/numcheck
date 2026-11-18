@@ -1,5 +1,8 @@
 """End-to-end demo test: all 10 planted errors are caught, control is clean."""
 
+import tempfile
+from pathlib import Path
+
 from numcheck.config import load_config
 from numcheck.demo import build_demo
 from numcheck.runner import run_review
@@ -13,21 +16,22 @@ def _has(issues, slide, issue_type, value_fragment=None):
     return False
 
 
-def test_demo_catches_all_planted_errors(tmp_path):
-    out = tmp_path / "samples"
-    paths = build_demo(out)
+def test_demo_catches_all_planted_errors():
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "samples"
+        paths = build_demo(out)
 
-    cfg = load_config(None)
-    cfg.llm = "off"
-    result = run_review(
-        paths["deck"],
-        [paths["model"]],
-        paths["model_old"],
-        str(out / "report"),
-        annotate=False,
-        config=cfg,
-    )
-    issues = result["issues"]
+        cfg = load_config(None)
+        cfg.llm = "off"
+        result = run_review(
+            paths["deck"],
+            [paths["model"]],
+            paths["model_old"],
+            str(out / "report"),
+            annotate=False,
+            config=cfg,
+        )
+        issues = result["issues"]
 
     # 1. Hardcoded revenue mismatch.
     assert _has(issues, 2, "mismatch", "$2,450m")

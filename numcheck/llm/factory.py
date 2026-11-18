@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 
 from numcheck.config import Config
-from numcheck.llm.providers import AnthropicProvider, NoopProvider, OpenAICompatProvider
+from numcheck.llm.providers import AnthropicProvider, CodexProvider, NoopProvider, OpenAICompatProvider
 
-PROVIDERS = ("off", "openai", "anthropic", "openai-compatible", "ollama")
+PROVIDERS = ("off", "openai", "anthropic", "openai-compatible", "ollama", "codex")
 
 
 def get_provider(config: Config):
@@ -32,6 +32,9 @@ def get_provider(config: Config):
             api_key="ollama",
             base_url=config.llm_base_url or "http://localhost:11434/v1",
         )
+
+    if p == "codex":
+        return CodexProvider()
 
     if p in ("anthropic", "claude"):
         key = config.llm_api_key or os.environ.get("ANTHROPIC_API_KEY", "")

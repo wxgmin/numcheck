@@ -170,7 +170,7 @@ can be overridden with environment variables.
 
 ```toml
 [llm]
-provider = "openai"        # off | openai | anthropic | openai-compatible | ollama
+provider = "openai"        # off | openai | anthropic | openai-compatible | ollama | codex
 model = "gpt-4o-mini"
 base_url = ""              # for openai-compatible endpoints / ollama
 api_key = ""               # optional; otherwise read from the provider env var
@@ -183,12 +183,21 @@ api_key = ""               # optional; otherwise read from the provider env var
 | `anthropic` | `ANTHROPIC_API_KEY` | Claude (requires `anthropic` in requirements) |
 | `openai-compatible` | `OPENAI_API_KEY` / `NUMCHECK_LLM_API_KEY` | Any OpenAI-compatible endpoint (OpenRouter, Groq, LiteLLM, vLLM, …) |
 | `ollama` | — | Local Ollama (`http://localhost:11434/v1`) |
+| `codex` | — | Uses the **OpenAI Codex CLI** authenticated with your ChatGPT login (no API key) |
 
-**No API key?** ChatGPT Plus does not expose a standard no-key API. The clean
-route is to point NumCheck at any OpenAI-compatible gateway (for example a
-local [LiteLLM](https://github.com/BerriAI/litellm) proxy configured with your
-account, or an OpenRouter key) via `provider = "openai-compatible"` and
-`base_url`. The numeric checks all still run without any LLM at all.
+**Use your existing ChatGPT subscription (no API key).** ChatGPT Plus/Pro does
+not expose a standard API key — that's a separate product. The supported way to
+use your subscription programmatically is the Codex CLI. Install it, sign in
+with your ChatGPT account, then set `provider = "codex"`:
+
+```bash
+npm install -g @openai/codex
+codex login          # choose "Sign in with ChatGPT"
+```
+
+NumCheck then shells out to `codex exec` for the disambiguation step. Model
+selection is controlled by the Codex CLI itself (`~/.codex/config.toml`). The
+numeric checks all still run without the LLM.
 
 Environment overrides:
 

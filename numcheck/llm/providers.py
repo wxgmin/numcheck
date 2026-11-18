@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 
 SYSTEM_PROMPT = (
     "You are a financial data disambiguation engine. For each item, choose the single "
@@ -70,6 +72,55 @@ class OpenAICompatProvider:
             return parse_resolutions(resp.choices[0].message.content or "", entries)
         except Exception:
             return {}
+
+
+class CodexProvider:
+    """Uses the OpenAI Codex CLI, authenticated with the user's ChatGPT login.
+
+    This is the supported way to use a ChatGPT Plus/Pro subscription without an
+    API key: `codex exec` runs non-interactively and returns the model response.
+    Model selection is handled by the Codex CLI's own config (~/.codex/config.toml).
+    """
+
+    name = "codex"
+
+    def __init__(self):
+        self.binary = shutil.which("codex")
+
+    def resolve(self, entries: list[dict], model: str) -> dict[str, str]:
+        if not self.binary:
+            return {}
+        prompt = (
+            SYSTEM_PROMPT
+            + "\n\nItems:\n"
+            + build_payload(entries)
+            + "\n\nRespond with ONLY the JSON object and nothing else."
+        )
+
+        # Prefer --output-last-message; fall back to a plain run if the flag
+        # is not supported by the installed Codex version.
+        for args in (
+            [self.binary, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", prompt],
+            [self.binary, "exec", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
+        ):
+            try:
+                proc = subprocess.run(args, capture_output=True, text=True, timeout=180)
+            except Exception:
+                continue
+            text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            parsed = parse_resolutions(_extract_json(text), entries)
+            if parsed:
+                return parsed
+        return {}
+
+
+def _extract_json(text: str) -> str:
+    """Pull the first balanced {...} JSON object out of free-form output."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return text
+    return text[start : end + 1]
 
 
 class AnthropicProvider:

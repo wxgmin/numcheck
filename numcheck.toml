@@ -9,7 +9,7 @@ ambiguity_band = 0.03
 
 [llm]
 # Provider for fuzzy label disambiguation only. All numeric comparison stays
-# deterministic. Options: off | openai | anthropic | openai-compatible | ollama
+# deterministic. Options: off | openai | anthropic | openai-compatible | ollama | codex
 provider = "off"
 model = "gpt-4o-mini"
 # base_url is for openai-compatible endpoints (e.g. a LiteLLM proxy) or ollama.
