@@ -91,6 +91,20 @@ python -m numcheck review samples/deck.pptx \
 Open `samples/report/report.html` (or `report.xlsx`) for the issue table and
 `samples/report/deck_flagged.pptx` for the annotated deck.
 
+## Web UI
+
+For an interactive, no-CLI experience:
+
+```bash
+python -m numcheck web
+# open http://127.0.0.1:8000
+```
+
+Upload a deck and one or more models (or hit **Load demo**), run the review in
+the browser, filter the issue table, and download the reports plus the
+annotated deck. The UI ships the same `codex`/`openai`/`anthropic`/
+`openai-compatible`/`ollama` provider picker.
+
 The demo deliberately plants 10 errors of different types and the tool catches
 all of them with zero false positives:
 
