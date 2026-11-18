@@ -17,6 +17,13 @@ HEADERS = [
 ]
 
 
+def _safe(value):
+    """Prevent Excel formula injection from user-supplied deck text."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 def write_excel_report(issues: list[Issue], out_path: str | Path) -> None:
     wb = Workbook()
     ws = wb.active
@@ -43,7 +50,7 @@ def write_excel_report(issues: list[Issue], out_path: str | Path) -> None:
             i.message,
         ]
         for c, val in enumerate(row, start=1):
-            ws.cell(row=r, column=c, value=val)
+            ws.cell(row=r, column=c, value=_safe(val))
 
     # severity fill on the severity column
     for r, i in enumerate(issues, start=2):

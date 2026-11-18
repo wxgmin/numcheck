@@ -139,7 +139,7 @@ def check_growth(deck_numbers: list[DeckNumber], config: Config, collector: Issu
 
 
 def _is_total(label: str) -> bool:
-    return any(w in (label or "").lower() for w in ("total", "subtotal", "sum"))
+    return bool(set((label or "").lower().split()) & {"total", "subtotal", "sum"})
 
 
 def _find_metric_value(nums: list[DeckNumber], metric: str, period: str, config: Config) -> float | None:

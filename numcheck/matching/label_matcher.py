@@ -14,31 +14,47 @@ STOPWORDS = {
 
 UNIT_TOKENS = {"m", "mm", "bn", "k", "b", "t"}
 
-_PERIOD_PAT = re.compile(r"\b(?:fy\s?\d{2}|cy\s?\d{2}|ltm|ntm|q[1-4])\b", re.IGNORECASE)
+_PERIOD_PAT = re.compile(r"\b(?:fy\s?\d{2,4}|cy\s?\d{2,4}|ltm|ntm|q[1-4](?:\s?\d{2,4})?)\b", re.IGNORECASE)
 _NUMBER_PAT = re.compile(r"\b\d+(?:\.\d+)?\b")
+_PERIOD_YEAR_RE = re.compile(r"\b(fy|cy)\s?(\d{2}|\d{4})\b", re.IGNORECASE)
 
 
-def _expand(tokens: list[str], config: Config) -> list[str]:
-    return [config.abbreviations.get(t, t) for t in tokens]
+def _expand_text(text: str, config: Config) -> str:
+    """Expand abbreviations as whole phrases/tokens (supports multi-word keys)."""
+    s = text
+    for key, value in config.abbreviations.items():
+        s = re.sub(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", value, s, flags=re.IGNORECASE)
+    return s
+
+
+def _normalize_periods(s: str) -> str:
+    """Normalize period spelling (FY2024 -> fy24) while KEEPING the period token."""
+    def repl(m: re.Match) -> str:
+        tag = m.group(1).lower()
+        year = m.group(2)
+        return f"{tag}{year[-2:]}"
+
+    return _PERIOD_YEAR_RE.sub(repl, s)
 
 
 def normalize_label(text: str, config: Config) -> str:
-    """Lowercase, strip punctuation, expand abbreviations, drop unit/number noise."""
-    s = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
-    tokens = _expand(s.split(), config)
-    tokens = [t for t in tokens if t not in UNIT_TOKENS and not t.isdigit()]
+    """Lowercase, expand abbreviations, normalize periods, drop unit/number noise."""
+    s = (text or "").lower()
+    s = _expand_text(s, config)
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    s = _normalize_periods(s)
+    tokens = [t for t in s.split() if t not in UNIT_TOKENS and not t.isdigit()]
     return " ".join(tokens)
 
 
 def metric_key(text: str, config: Config) -> str:
     """Canonical metric name (period/numbers/units stripped) for grouping."""
     s = (text or "").lower()
+    s = _expand_text(s, config)
     s = re.sub(r"[^a-z0-9\s]", " ", s)
     s = _PERIOD_PAT.sub(" ", s)
     s = _NUMBER_PAT.sub(" ", s)
-    tokens = _expand(s.split(), config)
-    tokens = [t for t in tokens if t not in STOPWORDS and t not in UNIT_TOKENS]
-    # dedupe while preserving order
+    tokens = [t for t in s.split() if t not in STOPWORDS and t not in UNIT_TOKENS]
     seen: set[str] = set()
     out: list[str] = []
     for t in tokens:

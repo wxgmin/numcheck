@@ -35,6 +35,10 @@ def extract_chart_numbers(slide_idx: int, shape) -> list[DeckNumber]:
                 value = float(vstr)
             except (TypeError, ValueError):
                 continue
+            if unit == "percent":
+                # Chart caches store percent values as ratios (0.25); the rest of
+                # the pipeline treats percent as points (25), so normalize here.
+                value *= 100.0
             cat = cats[i] if i < len(cats) else ""
             label = f"{name} {cat}".strip()
             out.append(

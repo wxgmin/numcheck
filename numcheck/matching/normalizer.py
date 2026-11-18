@@ -245,7 +245,11 @@ def values_match(
     rel = abs(d_val - m_val) / max(abs(m_val), abs(d_val), 1e-12)
     abs_diff = abs(d_val - m_val)
     tol = relative_tolerance(parsed, base_relative)
-    return rel <= tol or abs_diff <= absolute
+    if rel <= tol:
+        return True
+    # Absolute tolerance only applies to genuinely small magnitudes; otherwise a
+    # tiny fixed epsilon would make e.g. $0.10 vs $0.60 count as equal.
+    return abs_diff <= absolute and max(abs(d_val), abs(m_val)) <= absolute * 1e3
 
 
 def format_amount(value: float, digits: int = 1) -> str:

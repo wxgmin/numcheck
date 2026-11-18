@@ -39,9 +39,16 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("init-config", help="Write a starter config")
     i.add_argument("--out", default="numcheck.toml")
 
+    w = sub.add_parser("web", help="Launch the local web UI")
+    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--port", type=int, default=8000)
+
     args = parser.parse_args(argv)
 
     if args.command == "review":
+        if args.config and not Path(args.config).is_file():
+            print(f"error: config file not found: {args.config}", file=sys.stderr)
+            return 2
         cfg = load_config(args.config)
         if args.tolerance is not None:
             cfg.relative_tolerance = args.tolerance
@@ -57,9 +64,15 @@ def main(argv: list[str] | None = None) -> int:
         if not Path(args.deck).is_file():
             print(f"error: deck file not found: {args.deck}", file=sys.stderr)
             return 2
+        if not args.deck.lower().endswith(".pptx"):
+            print("error: deck must be a .pptx file", file=sys.stderr)
+            return 2
         for model in args.models:
             if not Path(model).is_file():
                 print(f"error: model file not found: {model}", file=sys.stderr)
+                return 2
+            if not model.lower().endswith(".xlsx"):
+                print(f"error: model must be a .xlsx file: {model}", file=sys.stderr)
                 return 2
         if args.model_old and not Path(args.model_old).is_file():
             print(f"error: old model file not found: {args.model_old}", file=sys.stderr)
@@ -83,6 +96,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init-config":
         _write_default_config(args.out)
+        return 0
+
+    if args.command == "web":
+        from numcheck.web.app import create_app
+
+        app = create_app()
+        print(f"NumCheck web UI → http://{args.host}:{args.port}")
+        app.run(host=args.host, port=args.port, debug=False)
         return 0
 
     return 1

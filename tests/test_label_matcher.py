@@ -14,6 +14,11 @@ def test_normalize_strips_units():
     assert normalize_label("FY24 Revenue ($m)", cfg) == "fy24 revenue"
 
 
+def test_normalize_period_spelling():
+    cfg = Config()
+    assert normalize_label("FY2024 Revenue", cfg) == normalize_label("FY24 Revenue", cfg)
+
+
 def test_metric_key_dedupes():
     cfg = Config()
     assert metric_key("Revenue_FY24 Total Revenue FY24 ($m)", cfg) == "revenue"

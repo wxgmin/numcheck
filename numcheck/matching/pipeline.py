@@ -80,7 +80,7 @@ def match_deck_to_model(
         best_rank = rank(best_model)
 
         contenders = [mv for mv in pool if rank(mv) >= best_rank - VALUE_AMBIGUITY_BAND]
-        contender_values = {canonical_model(mv, config.unit_scales)[1] for mv in contenders}
+        contender_values = {canonical_model(mv, config.unit_scales) for mv in contenders}
 
         if len(contender_values) <= 1:
             value_ok = values_match(

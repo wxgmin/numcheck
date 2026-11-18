@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NumCheck — Deck Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#080C11;
+  --bg-2:#0C1118;
+  --surface:#10161E;
+  --surface-2:#141B24;
+  --surface-3:#1A222D;
+  --border:#212B38;
+  --border-strong:#2C3948;
+  --text:#EAF0F6;
+  --muted:#8B96A6;
+  --dim:#5B6675;
+  --amber:#F5B94A;
+  --amber-strong:#FFD27A;
+  --red:#FF5C5C;
+  --teal:#2FD3B5;
+  --mono:"IBM Plex Mono",ui-monospace,monospace;
+  --sans:"IBM Plex Sans",system-ui,sans-serif;
+  --serif:"Fraunces",Georgia,serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background-color:var(--bg);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='30'%3E%3Ccircle cx='1.5' cy='1.5' r='1' fill='%2318202B'/%3E%3C/svg%3E");
+  color:var(--text);
+  font-family:var(--sans);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:"";
+  position:fixed;top:0;left:0;right:0;height:3px;
+  background:var(--amber);
+  z-index:50;
+}
+.wrap{max-width:1400px;margin:0 auto;padding:28px 32px 56px}
+
+/* Header */
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:26px}
+.brand{display:flex;flex-direction:column;gap:6px}
+.brand .logo{font-family:var(--serif);font-size:38px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--text)}
+.brand .logo span{color:var(--amber)}
+.brand .sub{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.status{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.status .dot{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 0 rgba(47,211,181,.5);animation:pulse 2.4s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(47,211,181,.5)}70%{box-shadow:0 0 0 9px rgba(47,211,181,0)}100%{box-shadow:0 0 0 0 rgba(47,211,181,0)}}
+
+/* Layout */
+.grid{display:grid;grid-template-columns:360px 1fr;gap:26px;align-items:start}
+@media(max-width:980px){.grid{grid-template-columns:1fr}}
+
+/* Panels */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.panel-head{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.panel-head h2{font-family:var(--serif);font-weight:600;font-size:16px;margin:0;letter-spacing:.2px}
+.panel-head .kicker{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.14em;text-transform:uppercase}
+.panel-body{padding:18px}
+
+/* Controls */
+.field{margin-bottom:18px}
+.field label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.filebox{position:relative;display:flex;align-items:center;gap:10px;border:1px dashed var(--border-strong);border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .2s,background-color .2s;background:var(--surface-2)}
+.filebox:hover{border-color:var(--amber);background:var(--surface-3)}
+.filebox input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.filebox .ic{font-family:var(--mono);color:var(--amber);font-size:15px}
+.filebox .txt{font-family:var(--mono);font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filebox.has .txt{color:var(--text)}
+.filebox .hint{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+select,input[type=text],input[type=number]{
+  width:100%;background:var(--surface-2);border:1px solid var(--border-strong);
+  border-radius:9px;color:var(--text);font-family:var(--mono);font-size:13px;padding:10px 12px;outline:none;
+}
+select:focus,input:focus{border-color:var(--amber)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.check{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.check input{accent-color:var(--amber);width:16px;height:16px}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;border-radius:10px;font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.02em;padding:12px 16px;cursor:pointer;border:1px solid transparent;transition:transform .08s,box-shadow .2s,background-color .2s}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--amber);color:#17110A;width:100%}
+.btn-primary:hover{background:var(--amber-strong);box-shadow:0 6px 20px rgba(245,185,74,.18)}
+.btn-ghost{background:transparent;border-color:var(--border-strong);color:var(--muted);width:100%}
+.btn-ghost:hover{border-color:var(--amber);color:var(--text)}
+.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
+
+/* Results */
+.results{display:flex;flex-direction:column;gap:18px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+.card .num{font-family:var(--mono);font-size:30px;font-weight:600;line-height:1}
+.card .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:8px}
+.card.total .num{color:var(--text)}
+.card.high .num{color:var(--red)}
+.card.medium .num{color:var(--amber)}
+.card.low .num{color:var(--teal)}
+
+.toolbar{display:flex;gap:12px;align-items:center}
+.toolbar input{flex:1}
+.toolbar select{width:auto;min-width:130px}
+
+.table-panel{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface)}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+thead th{position:sticky;top:0;background:var(--surface-3);color:var(--muted);text-align:left;font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:12px 14px;border-bottom:1px solid var(--border);font-weight:500}
+tbody td{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+tbody tr{transition:background-color .12s}
+tbody tr:hover{background:var(--surface-2)}
+td.slide{color:var(--dim);font-weight:600}
+td.mono{color:var(--text)}
+td.msg{color:var(--muted);min-width:240px}
+.badge{display:inline-block;padding:3px 9px;border-radius:99px;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.badge.high{background:rgba(255,92,92,.12);color:var(--red);border:1px solid rgba(255,92,92,.35)}
+.badge.medium{background:rgba(245,185,74,.12);color:var(--amber);border:1px solid rgba(245,185,74,.35)}
+.badge.low{background:rgba(47,211,181,.12);color:var(--teal);border:1px solid rgba(47,211,181,.35)}
+
+.empty{padding:64px 24px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:13px}
+.empty .big{font-family:var(--serif);font-size:22px;color:var(--muted);margin-bottom:10px}
+
+.downloads{display:flex;gap:10px;flex-wrap:wrap}
+.dl{font-family:var(--mono);font-size:12px;color:var(--amber);text-decoration:none;border:1px solid var(--border-strong);border-radius:8px;padding:8px 12px;transition:border-color .2s,color .2s}
+.dl:hover{border-color:var(--amber);color:var(--amber-strong)}
+
+.spinner{width:18px;height:18px;border:2px solid rgba(23,17,10,.35);border-top-color:#17110A;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.reveal{animation:rise .5s cubic-bezier(.22,.9,.32,1) both;animation-delay:var(--d,0s)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+.error{background:rgba(255,92,92,.08);border:1px solid rgba(255,92,92,.35);color:var(--red);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:12px}
+.meta{font-family:var(--mono);font-size:11px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo">Num<span>Check</span></div>
+      <div class="sub">Pitchbook number reconciliation</div>
+    </div>
+    <div class="status"><span class="dot"></span>local engine</div>
+  </header>
+
+  <div class="grid">
+    <aside class="panel reveal" style="--d:.05s">
+      <div class="panel-head"><h2>Run a review</h2><span class="kicker">inputs</span></div>
+      <div class="panel-body">
+        <div class="field">
+          <label>Deck (.pptx)</label>
+          <div class="filebox" id="deck-box"><span class="ic">▤</span><span class="txt" id="deck-txt">Choose pitchbook</span><span class="hint">required</span><input type="file" id="deck" accept=".pptx"></div>
+        </div>
+        <div class="field">
+          <label>Models (.xlsx)</label>
+          <div class="filebox" id="models-box"><span class="ic">▦</span><span class="txt" id="models-txt">Choose one or more models</span><span class="hint">required</span><input type="file" id="models" accept=".xlsx" multiple></div>
+        </div>
+        <div class="field">
+          <label>Previous model (.xlsx) — optional</label>
+          <div class="filebox" id="old-box"><span class="ic">↶</span><span class="txt" id="old-txt">For staleness check</span><span class="hint">optional</span><input type="file" id="model-old" accept=".xlsx"></div>
+        </div>
+
+        <div class="field">
+          <label>LLM provider</label>
+          <select id="llm">
+            <option value="off">off — deterministic only</option>
+            <option value="openai">openai</option>
+            <option value="anthropic">anthropic</option>
+            <option value="openai-compatible">openai-compatible</option>
+            <option value="ollama">ollama</option>
+            <option value="codex">codex (ChatGPT login)</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Base tolerance</label>
+            <input type="number" id="tolerance" value="0.006" step="0.001" min="0">
+          </div>
+          <div class="field" style="display:flex;align-items:flex-end;padding-bottom:2px">
+            <label class="check"><input type="checkbox" id="annotate" checked> Annotate deck</label>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="run">Run review</button>
+          <button class="btn btn-ghost" id="demo">Load demo</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="results">
+      <div class="cards" id="cards"></div>
+
+      <section class="panel reveal" style="--d:.15s">
+        <div class="panel-head">
+          <h2>Issues</h2>
+          <span class="meta" id="meta"></span>
+        </div>
+        <div class="panel-body">
+          <div class="toolbar">
+            <input type="text" id="q" placeholder="Filter by metric, value, cell, message…">
+            <select id="sev"><option value="">All severities</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+          </div>
+          <div class="table-panel" id="table-panel" style="margin-top:14px">
+            <div class="empty"><div class="big">No results yet</div>Upload a deck and models, or run the demo to see flagged numbers.</div>
+          </div>
+          <div class="downloads" id="downloads" style="margin-top:14px"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const files = { deck: null, models: [], old: null };
+
+function bindFile(inputId, boxId, txtId, multiple){
+  const input = document.getElementById(inputId);
+  const box = document.getElementById(boxId);
+  const txt = document.getElementById(txtId);
+  input.addEventListener('change', () => {
+    if (multiple){
+      files.models = Array.from(input.files);
+      txt.textContent = files.models.length ? files.models.map(f => f.name).join(', ') : 'Choose one or more models';
+    } else if (inputId === 'model-old'){
+      files.old = input.files[0] || null;
+      txt.textContent = files.old ? files.old.name : 'For staleness check';
+    } else {
+      files.deck = input.files[0] || null;
+      txt.textContent = files.deck ? files.deck.name : 'Choose pitchbook';
+    }
+    box.classList.toggle('has', !!txt.textContent && txt.textContent !== 'Choose pitchbook' && txt.textContent !== 'Choose one or more models' && txt.textContent !== 'For staleness check');
+  });
+}
+bindFile('deck','deck-box','deck-txt',false);
+bindFile('models','models-box','models-txt',true);
+bindFile('model-old','old-box','old-txt',false);
+
+function badge(sev){ return `<span class="badge ${sev}">${sev}</span>`; }
+
+function renderCards(s){
+  $('#cards').innerHTML = `
+    <div class="card total reveal" style="--d:0s"><div class="num">${s.total}</div><div class="lbl">Total</div></div>
+    <div class="card high reveal" style="--d:.05s"><div class="num">${s.by_severity.high || 0}</div><div class="lbl">High</div></div>
+    <div class="card medium reveal" style="--d:.1s"><div class="num">${s.by_severity.medium || 0}</div><div class="lbl">Medium</div></div>
+    <div class="card low reveal" style="--d:.15s"><div class="num">${s.by_severity.low || 0}</div><div class="lbl">Low</div></div>`;
+}
+
+function renderTable(issues){
+  const panel = $('#table-panel');
+  if (!issues.length){
+    panel.innerHTML = `<div class="empty"><div class="big">Clean deck</div>No issues found — the deck reconciles with the model.</div>`;
+    return;
+  }
+  let rows = issues.map(i => `
+    <tr data-sev="${i.severity}" data-text="${(i.metric_key+' '+i.deck_value+' '+i.expected_value+' '+i.source_cell+' '+i.message).toLowerCase()}">
+      <td class="slide">${i.slide_number}</td>
+      <td>${badge(i.severity)}</td>
+      <td class="mono">${i.issue_type}</td>
+      <td class="mono">${i.metric_key || '—'}</td>
+      <td class="mono">${escapeHtml(i.deck_value)}</td>
+      <td class="mono">${escapeHtml(i.expected_value || '—')}</td>
+      <td class="mono">${escapeHtml(i.source_cell || '—')}</td>
+      <td class="msg">${escapeHtml(i.message)}</td>
+    </tr>`).join('');
+  panel.innerHTML = `<table><thead><tr>
+    <th>Slide</th><th>Sev</th><th>Type</th><th>Metric</th><th>Deck</th><th>Expected</th><th>Source</th><th>Message</th>
+  </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderDownloads(runId){
+  const names = [['report.html','HTML report'],['report.xlsx','Excel report'],['report.json','JSON'],['deck_flagged.pptx','Annotated deck']];
+  $('#downloads').innerHTML = names.map(([f,l]) => `<a class="dl" href="/api/download/${runId}/${f}">↓ ${l}</a>`).join('');
+}
+
+function setBusy(b){
+  const btn = $('#run');
+  btn.innerHTML = b ? '<span class="spinner"></span> Running…' : 'Run review';
+  btn.disabled = b;
+  $('#demo').disabled = b;
+}
+
+async function run(endpoint, body){
+  setBusy(true);
+  $('#meta').textContent = 'running…';
+  try{
+    const res = await fetch(endpoint, { method:'POST', body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Review failed');
+    renderCards(data.summary);
+    renderTable(data.issues);
+    renderDownloads(data.run_id);
+    $('#meta').textContent = `${data.issues.length} issue(s) · ${data.deck_numbers} deck numbers · ${data.model_values} model cells · ${data.elapsed.toFixed(2)}s`;
+  }catch(err){
+    $('#table-panel').innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+    $('#meta').textContent = '';
+  }finally{
+    setBusy(false);
+  }
+}
+
+$('#run').addEventListener('click', () => {
+  if (!files.deck){ alert('Choose a deck (.pptx) first.'); return; }
+  if (!files.models.length){ alert('Choose at least one model (.xlsx).'); return; }
+  const fd = new FormData();
+  fd.append('deck', files.deck);
+  files.models.forEach(f => fd.append('models', f));
+  if (files.old) fd.append('model_old', files.old);
+  fd.append('llm', $('#llm').value);
+  fd.append('tolerance', $('#tolerance').value);
+  fd.append('annotate', $('#annotate').checked ? '1' : '0');
+  run('/api/review', fd);
+});
+
+$('#demo').addEventListener('click', () => run('/api/demo', new FormData()));
+
+$('#q').addEventListener('input', filterTable);
+$('#sev').addEventListener('change', filterTable);
+function filterTable(){
+  const term = $('#q').value.toLowerCase(), sev = $('#sev').value;
+  document.querySelectorAll('#table-panel tbody tr').forEach(tr => {
+    const okText = tr.dataset.text.includes(term);
+    const okSev = !sev || tr.dataset.sev === sev;
+    tr.style.display = (okText && okSev) ? '' : 'none';
+  });
+}
+</script>
+</body>
+</html>

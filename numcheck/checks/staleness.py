@@ -26,8 +26,10 @@ def check_staleness(
         new = new_matches[i]
         if old.status != "matched":
             continue
-        # Matches the old model; flag if it no longer matches the new one.
-        if new.status == "matched":
+        # Only flag when the deck matches the old model but explicitly mismatches
+        # the new one. Unmatched/ambiguous in the new model means "unverifiable",
+        # not evidence the value changed.
+        if new.status != "mismatch":
             continue
 
         new_expected = _find_new_value(old.model, new_model_values, config)

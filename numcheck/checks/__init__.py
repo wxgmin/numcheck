@@ -25,6 +25,8 @@ def severity_for(issue_type: IssueType, metric_key: str, config: Config) -> Seve
         IssueType.SUM_ERROR,
         IssueType.INCONSISTENT_ACROSS_SLIDES,
         IssueType.STALE,
+        IssueType.UNMATCHED,
+        IssueType.AMBIGUOUS,
     ):
         return Severity.HIGH if is_key else Severity.MEDIUM
     if issue_type in (IssueType.PCT_RECONCILE, IssueType.GROWTH_RECONCILE, IssueType.UNIT_PERIOD_MISMATCH):

@@ -73,11 +73,9 @@ def _highlight_shape(shape, deck_value: str, color: RGBColor) -> None:
                 for cell in row.cells:
                     _highlight_text_frame(cell.text_frame, deck_value, color)
         elif getattr(shape, "has_chart", False):
-            try:
-                shape.line.color.rgb = color
-                shape.line.width = Pt(2.0)
-            except Exception:
-                pass
+            # Chart shapes are GraphicFrames with no `.line`; the per-slide notes
+            # slide carries the detail. Flagged chart numbers are not re-colored.
+            pass
     except Exception:
         # Annotation is best-effort; never fail the report for one shape.
         pass
@@ -91,8 +89,16 @@ def _highlight_text_frame(text_frame, deck_value: str, color: RGBColor) -> None:
                 run.font.bold = True
 
 
+def _blank_layout(prs: Presentation):
+    for layout in prs.slide_layouts:
+        name = (layout.name or "").lower()
+        if "blank" in name or "title only" in name:
+            return layout
+    return prs.slide_layouts[0]
+
+
 def _add_notes_slide(prs: Presentation, issues: list[Issue]) -> None:
-    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank layout
+    slide = prs.slides.add_slide(_blank_layout(prs))
     left, top, width, height = Inches(0.6), Inches(0.5), Inches(12), Inches(0.8)
     box = slide.shapes.add_textbox(left, top, width, height)
     tf = box.text_frame

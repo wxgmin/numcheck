@@ -46,9 +46,13 @@ def get_provider(config: Config):
 def resolve_ambiguous(entries: list[dict], config: Config) -> dict[str, str]:
     """Resolve ambiguous deck->cell mappings with the configured provider.
 
-    Returns {entry_id: cell_address}; empty dict when no provider/key is available.
+    Returns {entry_id: cell_address}; empty dict when no provider/key is available
+    or the provider is misconfigured (never raises).
     """
-    provider = get_provider(config)
+    try:
+        provider = get_provider(config)
+    except ValueError:
+        return {}
     if isinstance(provider, NoopProvider):
         return {}
     return provider.resolve(entries, config.model_name)

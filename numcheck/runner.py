@@ -100,7 +100,11 @@ def run_review(
     write_excel_report(issues, out / "report.xlsx")
     write_json_report(issues, out / "report.json")
     if annotate:
-        annotate_deck(deck_path, str(out / "deck_flagged.pptx"), issues)
+        try:
+            annotate_deck(deck_path, str(out / "deck_flagged.pptx"), issues)
+        except Exception:
+            # Annotation is best-effort; reports are already written.
+            pass
 
     elapsed = time.time() - start
     return {
