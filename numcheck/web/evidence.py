@@ -15,6 +15,7 @@ from pptx import Presentation
 from numcheck.extraction.fileio import soffice_binary, soffice_convert
 from numcheck.models import ModelValue
 from numcheck.numfmt import parse_number_format
+from numcheck.periods import header_period_key
 from numcheck.report.annotate_pptx import _find_shape
 
 _PDF_RENDER_LOCK = threading.Lock()  # PDFium is not thread-safe across documents.
@@ -38,29 +39,80 @@ def _display(cell) -> str:
     return str(value)[:500]
 
 
-def workbook_preview(path: Path, model: ModelValue) -> dict:
-    """Show a small grid from the saved workbook without recalculating it."""
+_VIEW_ROWS = 16
+_VIEW_COLS = 10
+
+
+def _cell_preview(cell, row: int, col: int) -> dict:
+    return {
+        "address": f"{get_column_letter(col)}{row}",
+        "text": _display(cell),
+        "numeric": isinstance(cell.value, (float, int)) and not isinstance(cell.value, bool),
+        "bold": bool(getattr(getattr(cell, "font", None), "bold", False)),
+    }
+
+
+def workbook_preview(path: Path, model: ModelValue, *, top: int | None = None, left: int | None = None) -> dict:
+    """Read a navigable window and keep the reported source separate from the viewport."""
     row, col = coordinate_to_tuple(model.cell_address)
-    top, left = max(1, row - 5), max(1, col - 4)
-    bottom, right = min(1_048_576, row + 6), min(16_384, col + 5)
     with closing(load_workbook(path, read_only=True, data_only=True, keep_links=False)) as workbook:
         if model.sheet_name not in workbook.sheetnames:
             raise PreviewUnavailable("The cited sheet is unavailable in the original workbook.")
         sheet = workbook[model.sheet_name]
-        rows = []
-        for r, cells in enumerate(sheet.iter_rows(min_row=top, max_row=bottom, min_col=left, max_col=right), top):
-            rows.append({"row": r, "cells": [{
-                "address": f"{get_column_letter(c)}{r}",
-                "text": _display(cell),
-                "numeric": isinstance(cell.value, (float, int)) and not isinstance(cell.value, bool),
-                "bold": bool(getattr(getattr(cell, "font", None), "bold", False)),
-            } for c, cell in enumerate(cells, left)]})
-        target = next((c["text"] for r in rows for c in r["cells"] if c["address"] == model.cell_address), "")
+        max_row = min(1_048_576, max(row, sheet.max_row or row))
+        max_col = min(16_384, max(col, sheet.max_column or col))
+        origin_top, origin_left = max(1, row - 10), max(1, col - 7)
+        top = min(max_row, max(1, top if top is not None else origin_top))
+        left = min(max_col, max(1, left if left is not None else origin_left))
+        bottom, right = min(max_row, top + _VIEW_ROWS - 1), min(max_col, left + _VIEW_COLS - 1)
+        # Keep the source's original period row even when the viewport moves.
+        header_row = None
+        saved_value = ""
+        scan_top = max(1, row - 80)
+        for r, (cell,) in enumerate(sheet.iter_rows(min_row=scan_top, max_row=row, min_col=col, max_col=col), scan_top):
+            raw = cell.value
+            if r == row:
+                saved_value = _display(cell)
+            elif raw is not None and (
+                (model.col_label and str(raw).strip().casefold() == model.col_label.strip().casefold())
+                or (model.period and header_period_key(str(raw)) == model.period)
+            ):
+                header_row = r
+
+        rows = [{"row": r, "cells": [_cell_preview(cell, r, c) for c, cell in enumerate(cells, left)]}
+                for r, cells in enumerate(sheet.iter_rows(min_row=top, max_row=bottom, min_col=left, max_col=right), top)]
+        header = next((record for record in rows if record["row"] == header_row), None)
+        if header_row is not None and header is None:
+            cells = next(sheet.iter_rows(min_row=header_row, max_row=header_row, min_col=left, max_col=right))
+            header = {"row": header_row, "cells": [_cell_preview(cell, header_row, c)
+                                                   for c, cell in enumerate(cells, left)]}
+        # On an offset viewport, preserve the workbook's actual left-side row labels.
+        label_col = 1
+        if left > 1:
+            label_end = min(4, left - 1)
+            source_labels = next(sheet.iter_rows(min_row=row, max_row=row, max_col=label_end), ())
+            matches = [c for c, cell in enumerate(source_labels, 1) if isinstance(cell.value, str)
+                       and cell.value.strip().casefold() == (model.row_label or "").strip().casefold()]
+            label_col = matches[0] if matches else next(
+                (c for c, cell in enumerate(source_labels, 1) if isinstance(cell.value, str) and cell.value.strip()), 1)
+            if rows:
+                label_rows = sheet.iter_rows(min_row=top, max_row=bottom, min_col=label_col, max_col=label_col)
+                for record, (label_cell,) in zip(rows, label_rows):
+                    record["cells"].insert(0, _cell_preview(label_cell, record["row"], label_col))
+            if header is not None and not top <= header_row <= bottom:
+                label_cell = sheet.cell(header["row"], label_col)
+                header["cells"].insert(0, _cell_preview(label_cell, header["row"], label_col))
+
+        columns = ([get_column_letter(label_col)] if left > 1 else []) + [
+            get_column_letter(c) for c in range(left, right + 1)]
         return {
             "sheet": sheet.title, "address": model.cell_address, "formula": model.formula,
-            "columns": [get_column_letter(c) for c in range(left, right + 1)], "rows": rows,
-            "saved_value": target, "number_format": model.number_format, "hidden_sheet": sheet.sheet_state != "visible",
+            "columns": columns, "rows": rows, "header": header, "label_column": get_column_letter(label_col),
+            "saved_value": saved_value, "number_format": model.number_format, "hidden_sheet": sheet.sheet_state != "visible",
             "row_label": model.row_label, "col_label": model.col_label,
+            "window": {"top": top, "left": left, "bottom": bottom, "right": right,
+                       "max_row": max_row, "max_col": max_col, "first": get_column_letter(left),
+                       "last": get_column_letter(right)},
         }
 
 

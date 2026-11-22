@@ -91,6 +91,7 @@ class Job:
     last_access: float = field(default_factory=time.time)
     future: Future | None = None
     cfg: Config | None = None
+    slide_previews: dict[tuple, dict] = field(default_factory=dict, repr=False)
     preview_lock: Any = field(default_factory=threading.Lock, repr=False)
 
 
@@ -515,6 +516,7 @@ def create_app(config_path: str | None = None) -> Flask:
         mb = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
         return jsonify({
             "version": __version__,
+            "slide_preview": bool(fileio.soffice_binary()),
             "providers": provider_info(cfg),
             "ocr": {"available": _ocr_available()},
             "limits": {"max_upload_mb": mb, "tolerance_max": 0.1, "base_period_max_chars": 12},
@@ -649,9 +651,17 @@ def create_app(config_path: str | None = None) -> Flask:
             with job.preview_lock:
                 if not job.dir.is_dir():
                     raise PreviewUnavailable("The review has expired.")
-                result.update(slide_preview(Path(job.paths["deck"]), job.dir / "preview", location, token,
-                                            exact_text=match is not None and match.deck.source.value in
-                                            ("text_box", "table")))
+                exact_text = match is not None and match.deck.source.value in ("text_box", "table")
+                key = (location.slide_number, location.shape_id, location.table_row, location.table_col,
+                       token if exact_text else None)
+                preview = job.slide_previews.pop(key, None)
+                if preview is None:
+                    preview = slide_preview(Path(job.paths["deck"]), job.dir / "preview", location, token,
+                                            exact_text=exact_text)
+                job.slide_previews[key] = preview
+                if len(job.slide_previews) > 12:
+                    job.slide_previews.pop(next(iter(job.slide_previews)))
+                result.update(preview)
         except PreviewUnavailable as exc:
             result["message"] = str(exc)
         except Exception:  # Preview failure must leave the original download accessible.
@@ -685,7 +695,8 @@ def create_app(config_path: str | None = None) -> Flask:
         slot, path, name = workbook
         result.update({"file": name, "slot": slot, "download": f"/api/jobs/{job.id}/original/{slot}"})
         try:
-            result.update(workbook_preview(path, selected))
+            result.update(workbook_preview(path, selected, top=request.args.get("row", type=int),
+                                           left=request.args.get("col", type=int)))
         except PreviewUnavailable as exc:
             result["message"] = str(exc)
         except Exception:

@@ -24,7 +24,7 @@
   var COLUMNS = [
     ["sev", "Severity", ""], ["slide", "Slide", "r"], ["type", "Finding", ""], ["metric", "Metric", ""],
     ["deck", "In the deck", "r"], ["expected", "Expected", "r"],
-    ["source", "Excel source", ""]
+    ["", "Evidence", "issue-inspect"], ["source", "Excel source", ""]
   ];
   var COV_PAGE = 500;
   var POLL_MS = 700;
@@ -430,6 +430,14 @@
     selectTab("issues", false);
     setStatus("done", "Review complete");
     $("view").focus();
+    var job = S.jobId, first = S.visible[0];
+    if (first && S.meta && S.meta.slide_preview) {
+      setTimeout(function () {
+        if (S.jobId === job && !$("resultsView").hidden && !$("evidenceDialog").open) {
+          api("GET", "/api/jobs/" + job + "/evidence/slide?issue=" + first.id).catch(function () {});
+        }
+      }, 150);
+    }
   }
 
   function renderSummary() {
@@ -621,6 +629,10 @@
   function renderIssueHead() {
     var tr = clear($("issueHead"));
     COLUMNS.forEach(function (c) {
+      if (!c[0]) {
+        tr.appendChild(el("th", { scope: "col", class: c[2], text: c[1] }));
+        return;
+      }
       var active = S.sort.key === c[0];
       var th = el("th", { role: "columnheader", scope: "col", class: c[2], "aria-sort": active ? (S.sort.dir === 1 ? "ascending" : "descending") : "none" }, [
         el("button", { type: "button", class: "th-btn", on: { click: function () {
@@ -661,6 +673,8 @@
           [i.deck_value ? evidenceButton(i.deck_value, i.deck_value + " on slide " + i.slide_number, { issue: i.id }) : "—"]),
         el("td", { role: "cell", class: "r mono issue-expected", "data-caption": "Expected" },
           [i.expected_value && i.source_cell ? evidenceButton(i.expected_value, i.source_cell, { issue: i.id }) : (i.expected_value || "—")]),
+        el("td", { role: "cell", class: "issue-inspect" },
+          [evidenceButton("Inspect", "issue " + i.id + " sources", { issue: i.id }, true)]),
         el("td", { role: "cell", class: "mono source-cell", text: i.source_cell || "—", title: i.source_cell })
       ]);
       body.appendChild(tr);
@@ -766,9 +780,9 @@
   // -------------------------------------------------------------- source preview
   var previewSequence = 0;
 
-  function evidenceButton(text, label, params) {
-    return el("button", { type: "button", class: "linkish", text: text,
-      "aria-label": "Preview " + label, on: { click: function (event) {
+  function evidenceButton(text, label, params, prominent) {
+    return el("button", { type: "button", class: prominent ? "btn small inspect-btn" : "linkish", text: text,
+      "aria-label": (prominent ? "Inspect " : "Preview ") + label, on: { click: function (event) {
         event.stopPropagation();
         openEvidence(params, label);
       } } });
@@ -780,6 +794,7 @@
 
   function paintWorkbook(host, data, loadCell, issueId) {
     clear(host);
+    var selected = (data.sources || []).find(function (source) { return source.selected; });
     if (data.sources && data.sources.length > 1) {
       var label = el("label", { class: "evidence-picker", text: "Source cell" });
       var select = el("select", { on: { change: function () { if (select.value) loadCell(select.value); } } });
@@ -788,7 +803,6 @@
         select.appendChild(el("option", { value: source.ref,
           text: (source.prior ? "Prior model · " : "") + (source.label || source.ref) }));
       });
-      var selected = data.sources.find(function (source) { return source.selected; });
       select.value = selected ? selected.ref : "";
       label.appendChild(select);
       host.appendChild(label);
@@ -799,22 +813,53 @@
       ]));
       var context = [data.row_label, data.col_label].filter(Boolean).join(" · ");
       if (context) host.appendChild(el("p", { class: "note", text: context }));
-      var grid = el("table", { class: "evidence-grid", "aria-label": "Cells around " + data.address });
-      grid.appendChild(el("thead", null, [el("tr", null, [el("th", { text: "" })].concat(data.columns.map(function (column) {
-        return el("th", { scope: "col", text: column });
-      })))]));
-      grid.appendChild(el("tbody", null, data.rows.map(function (row) {
-        return el("tr", null, [el("th", { scope: "row", text: row.row })].concat(row.cells.map(function (cell) {
-          var current = cell.address === data.address;
-          return el("td", { class: (cell.numeric ? "is-number " : "") + (cell.bold ? "is-bold " : "") + (current ? "is-source" : ""),
+      var w = data.window, currentRef = selected && selected.ref;
+      function moveButton(text, action, row, col, disabled) {
+        return el("button", { type: "button", class: "btn small", "data-move": action, text: text,
+          disabled: disabled, on: { click: function () { loadCell(currentRef, row, col); } } });
+      }
+      host.appendChild(el("nav", { class: "sheet-navigation", "aria-label": "Worksheet navigation" }, [
+        moveButton("Up", "up", Math.max(1, w.top - 12), w.left, w.top === 1),
+        moveButton("Down", "down", Math.min(w.top + 12, w.max_row - (w.bottom - w.top)), w.left, w.bottom >= w.max_row),
+        moveButton("Left", "left", w.top, Math.max(1, w.left - 7), w.left === 1),
+        moveButton("Right", "right", w.top, Math.min(w.left + 7, w.max_col - (w.right - w.left)), w.right >= w.max_col),
+        moveButton("Back to " + data.address, "source", undefined, undefined, false)
+      ]));
+      host.appendChild(el("p", { class: "note sheet-coordinates",
+        text: "Rows " + w.top + "–" + w.bottom + " · Columns " + w.first + "–" + w.last }));
+
+      function gridRow(row, header) {
+        return el("tr", null, [el("th", { scope: "row", class: "sheet-rownum", text: row.row })].concat(row.cells.map(function (cell, index) {
+          var current = cell.address === data.address, pinned = index === 0 && data.label_column === data.columns[0];
+          return el(header ? "th" : "td", { scope: header ? "col" : null,
+            class: (cell.numeric ? "is-number " : "") + (cell.bold ? "is-bold " : "") +
+              (pinned ? "sheet-label " : "") + (current ? "is-source" : ""),
             "aria-label": current ? "Highlighted source " + cell.address + ": " + (cell.text || "empty") : null,
             text: cell.text, title: cell.address + (cell.text ? " · " + cell.text : "") });
         })));
-      })));
+      }
+      var grid = el("table", { class: "evidence-grid", "aria-label": "Cells around " + data.address });
+      var headings = el("thead", null, [el("tr", null, [el("th", { class: "sheet-rownum", text: "#" })].concat(data.columns.map(function (column, index) {
+        return el("th", { scope: "col", class: index === 0 && column === data.label_column ? "sheet-label" : "", text: column });
+      })))]);
+      if (data.header) headings.appendChild(gridRow(data.header, true));
+      grid.appendChild(headings);
+      grid.appendChild(el("tbody", null, data.rows.filter(function (row) {
+        return !data.header || row.row !== data.header.row;
+      }).map(function (row) { return gridRow(row, false); })));
       var gridHost = el("div", { class: "evidence-scroll", tabindex: "0", role: "region", "aria-label": "Workbook grid" }, [grid]);
       host.appendChild(gridHost);
       var highlighted = grid.querySelector(".is-source");
-      if (highlighted) gridHost.scrollLeft = Math.max(0, highlighted.offsetLeft - grid.offsetLeft - gridHost.clientWidth / 2);
+      if (highlighted) {
+        var gridBox = gridHost.getBoundingClientRect(), targetBox = highlighted.getBoundingClientRect();
+        var pinnedLabel = grid.querySelector(".sheet-label");
+        var frozenWidth = (pinnedLabel ? pinnedLabel.offsetWidth : 0) + grid.querySelector(".sheet-rownum").offsetWidth;
+        if (targetBox.right > gridBox.right) gridHost.scrollLeft = targetBox.right - gridBox.right + 12;
+        if (targetBox.top > gridBox.top + gridHost.clientHeight - highlighted.offsetHeight) {
+          gridHost.scrollTop = Math.max(0, targetBox.top - gridBox.top - gridHost.clientHeight / 2);
+        }
+        if (targetBox.left < gridBox.left + frozenWidth && !highlighted.classList.contains("sheet-label")) gridHost.scrollLeft = 0;
+      }
       if (data.formula) {
         host.appendChild(el("p", { class: "evidence-formula" }, [el("strong", { text: "Formula" }),
           el("code", { text: data.formula })]));
@@ -864,14 +909,20 @@
       if (data.download) slide.appendChild(originalLink(data.download, "Download original PowerPoint"));
     }).catch(function (err) { if (run === previewSequence) slide.textContent = err.message; });
 
-    function loadCell(ref) {
+    function loadCell(ref, row, col) {
       var index = ++requestIndex, sourceQuery = new URLSearchParams(query);
       if (ref) sourceQuery.set("cell", ref);
+      if (row !== undefined) sourceQuery.set("row", row);
+      if (col !== undefined) sourceQuery.set("col", col);
       api("GET", base + "workbook?" + sourceQuery).then(function (data) {
         if (run === previewSequence && index === requestIndex) {
-          var focused = workbook.contains(document.activeElement);
+          var focused = workbook.contains(document.activeElement), move = document.activeElement.dataset.move;
           paintWorkbook(workbook, data, loadCell, params.issue);
-          if (focused && workbook.querySelector("select")) workbook.querySelector("select").focus();
+          if (focused) {
+            var next = move ? workbook.querySelector('[data-move="' + move + '"]:not(:disabled)') ||
+              workbook.querySelector('[data-move="source"]') : workbook.querySelector("select");
+            if (next) next.focus({ preventScroll: true });
+          }
         }
       }).catch(function (err) {
         if (run === previewSequence && index === requestIndex) workbook.textContent = err.message;
@@ -926,6 +977,9 @@
       slideLocation += " · Chart";
     }
     body.appendChild(el("section", null, [
+      el("div", { class: "drawer-inspect" }, [
+        evidenceButton("Inspect PowerPoint & Excel", "original sources for issue " + i.id, { issue: i.id }, true)
+      ]),
       el("div", { class: "compare" }, [
         el("div", null, [el("div", { class: "detail-label", text: "In the deck" }), el("div", { class: "big is-deck", text: i.deck_value || "—" }),
           el("p", { class: "evidence-location", text: slideLocation })]),
@@ -933,7 +987,6 @@
           el("div", { class: "big" + (hasExpected ? "" : " is-empty"), text: i.expected_value || "—" }),
           el("p", { class: "evidence-location" + (i.source_cell ? " mono" : ""), text: i.source_cell || "No workbook cell linked" })])
       ]),
-      evidenceButton("Preview original sources", "original sources for issue " + i.id, { issue: i.id }),
       el("p", { class: "explain", text: i.message }),
       precisionSentence(i) ? el("p", { class: "explain muted", text: precisionSentence(i) }) : null,
       (i.difference !== null && i.difference !== undefined) ? el("p", { class: "explain muted num", text:

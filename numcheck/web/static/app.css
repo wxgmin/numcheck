@@ -560,3 +560,31 @@ kbd { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--li
   .evidence-panes > section + section { border-inline-start: 0; border-top: 1px solid var(--line); }
 }
 .source-confirmation { margin-top: .65rem; }
+
+/* Evidence entry points and worksheet navigation */
+.inspect-btn {
+  border-color: var(--accent); color: var(--accent);
+  font-weight: 700; white-space: nowrap;
+}
+.inspect-btn:hover { border-color: var(--accent); background: var(--surface-2); }
+.drawer-inspect { margin-bottom: .75rem; }
+.drawer-inspect .inspect-btn { min-height: 2.5rem; padding-inline: .9rem; }
+.sheet-navigation { display: flex; flex-wrap: wrap; gap: .35rem; margin-block: .45rem; }
+.sheet-navigation .btn:last-child { margin-inline-start: .25rem; }
+.evidence-panes .sheet-coordinates { margin-block: .25rem; }
+.evidence-grid { border-collapse: separate; border-spacing: 0; }
+.evidence-grid :is(th, td) { border-width: 0 1px 1px 0; }
+.evidence-grid thead { position: sticky; top: 0; z-index: 3; }
+.evidence-grid thead tr + tr th { background: #22483e; color: #fff; }
+.evidence-grid .sheet-rownum {
+  position: sticky; left: 0; z-index: 2;
+  box-sizing: border-box; width: 3rem; min-width: 3rem; max-width: 3rem;
+}
+.evidence-grid .sheet-label { position: sticky; left: 3rem; z-index: 1; min-width: 7.5rem; }
+.evidence-grid tbody .sheet-label { background: #f1f6f3; }
+.evidence-grid tbody .sheet-label.is-source { background: #fff0c4; }
+.evidence-grid thead .sheet-rownum { z-index: 4; }
+@media (max-width: 850px) {
+  #issueTable .issue-inspect { grid-column: 1 / -1; padding-top: .35rem; }
+}
+.evidence-grid .sheet-label { max-width: clamp(7.5rem, 30vw, 12rem); }

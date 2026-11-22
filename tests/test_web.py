@@ -334,6 +334,17 @@ def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_pa
         assert client.get(sheet["download"]).data == (ASSET_DIR / DEMO_FILES["model"][0]).read_bytes()
         assert client.get(base + "/original/not-a-slot").status_code == 404
         assert client.get(base + "/evidence/workbook?issue=0").status_code == 404
+        stale = next(i for i in result["issues"] if i["slide_number"] == 3 and i["deck_value"] == "275.0")
+        stale_query = f"?issue={stale['id']}"
+        source_window = client.get(base + "/evidence/workbook" + stale_query).get_json()
+        assert source_window["address"] == "G11" and source_window["window"]["top"] == 1
+        assert source_window["header"]["row"] == 4
+        assert any(c["address"] == "G4" and c["text"] == "FY25E" for c in source_window["header"]["cells"])
+        moved = client.get(base + "/evidence/workbook" + stale_query + "&row=7&col=8").get_json()
+        assert moved["header"]["row"] == 4 and moved["window"]["left"] == 8
+        assert moved["saved_value"] == "269.9" and moved["label_column"] == "A"
+        assert any(c["address"] == "A11" and c["text"] == "Adjusted EBITDA"
+                   for row in moved["rows"] for c in row["cells"])
         files = client.get(base + "/inputs").get_json()["files"]
         assert files[0]["sha256"] == hashlib.sha256(deck_bytes).hexdigest()
         assert client.delete(base, headers=HDR).status_code == 200
