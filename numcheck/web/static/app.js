@@ -346,7 +346,8 @@
     fd.append("deck", S.files.deck[0].file, S.files.deck[0].file.name);
     S.files.models.forEach(function (e) { fd.append("models", e.file, e.file.name); });
     if (S.files.old.length) fd.append("model_old", S.files.old[0].file, S.files.old[0].file.name);
-    appendProviderSettings(fd);
+    if ($("llm-auto").checked) appendProviderSettings(fd);
+    else fd.append("llm", "off");
     fd.append("rounding_mode", $("set-rounding").value);
     fd.append("base_period", $("set-base").value.trim());
     var tol = $("set-tol").value.trim();
@@ -851,13 +852,14 @@
   function paintWorkbook(host, data, loadCell, issueId) {
     clear(host);
     var selected = (data.sources || []).find(function (source) { return source.selected; });
-    if (data.sources && data.sources.length > 1) {
+    if (data.sources && (data.sources.length > 1 || (data.sources.length && !selected))) {
       var label = el("label", { class: "evidence-picker", text: "Source cell" });
       var select = el("select", { on: { change: function () { if (select.value) loadCell(select.value); } } });
       select.appendChild(el("option", { value: "", text: "Choose a source", disabled: true }));
       data.sources.forEach(function (source) {
         select.appendChild(el("option", { value: source.ref,
-          text: (source.prior ? "Prior model · " : "") + (source.label || source.ref) }));
+          text: (source.prior ? "Prior model · " : source.possible ? "Possible source · " : "") +
+            (source.label || source.ref) + (source.possible && source.metric ? " · " + source.metric : "") }));
       });
       select.value = selected ? selected.ref : "";
       label.appendChild(select);
@@ -905,6 +907,8 @@
       }).map(function (row) { return gridRow(row, false); })));
       var gridHost = el("div", { class: "evidence-scroll", tabindex: "0", role: "region", "aria-label": "Workbook grid" }, [grid]);
       host.appendChild(gridHost);
+      if (data.candidate_check) host.appendChild(el("p", { class: "note", text: data.candidate_check +
+        " Confirm the metric and period before recording this candidate." }));
       if (data.formula) {
         host.appendChild(el("p", { class: "evidence-formula" }, [el("strong", { text: "Formula" }),
           el("code", { text: data.formula })]));
@@ -949,6 +953,38 @@
     var dialog = $("evidenceDialog"), run = ++previewSequence, requestIndex = 0;
     var base = "/api/jobs/" + S.jobId + "/evidence/";
     var query = new URLSearchParams(params);
+    var tools = $("sourceTools"), find = $("findSources"), ask = $("askSourceAI"), discovery = $("sourceDiscoveryStatus");
+    var issueId = params.issue;
+    if (issueId === undefined && params.figure) {
+      var finding = S.issues.find(function (issue) { return issue.deck_uid === params.figure; });
+      if (finding) issueId = finding.id;
+    }
+    var aiConfigured = $("set-llm").value !== "off";
+    tools.hidden = true;
+    find.disabled = ask.disabled = false;
+    ask.hidden = true;
+    discovery.textContent = "";
+    async function discover(useAI) {
+      var form = new FormData();
+      if (useAI) appendProviderSettings(form);
+      find.disabled = ask.disabled = true;
+      discovery.textContent = useAI ? "Asking AI to compare the candidate labels…" : "Searching workbook labels locally…";
+      try {
+        var result = await api("POST", base + "sources?" + query, form);
+        if (run !== previewSequence) return;
+        ask.hidden = !aiConfigured || !result.count;
+        discovery.textContent = result.message || (result.recommended ? "AI suggested a source. Inspect the cell before confirming." :
+          (result.count ? "Found " + plural(result.count, "possible source") + ". Choose one to inspect." :
+            "No additional sources found with compatible labels, units and periods."));
+        loadCell(result.recommended);
+      } catch (err) {
+        if (run === previewSequence) discovery.textContent = err.message;
+      } finally {
+        if (run === previewSequence) find.disabled = ask.disabled = false;
+      }
+    }
+    find.onclick = function () { discover(false); };
+    ask.onclick = function () { discover(true); };
     var slide = clear($("slidePreview")), workbook = clear($("workbookPreview"));
     $("evidenceSubtitle").textContent = label;
     slide.textContent = "Rendering original slide…";
@@ -977,7 +1013,8 @@
       api("GET", base + "workbook?" + sourceQuery).then(function (data) {
         if (run === previewSequence && index === requestIndex) {
           var focused = workbook.contains(document.activeElement), move = document.activeElement.dataset.move;
-          paintWorkbook(workbook, data, loadCell, params.issue);
+          tools.hidden = !data.can_discover;
+          paintWorkbook(workbook, data, loadCell, issueId);
           if (focused) {
             var next = move ? workbook.querySelector('[data-move="' + move + '"]:not(:disabled)') ||
               workbook.querySelector('[data-move="source"]') : workbook.querySelector("select");
@@ -1239,7 +1276,7 @@
     if (e.key === "Escape") {
       if (!$("helpModal").hidden) { closeHelp(); e.preventDefault(); }
       else if (S.drawerId !== null) { closeDrawer(); e.preventDefault(); }
-      else if (typing(e.target)) e.target.blur();
+      else if (typing(e.target) || e.target.classList.contains("tip-trigger")) e.target.blur();
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;

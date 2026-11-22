@@ -72,6 +72,11 @@
         <ul class="files" id="files-old"></ul>
       </div>
 
+      <div class="field-heading">
+        <span>How NumCheck works</span>
+        <button type="button" class="tip-trigger" aria-label="How NumCheck checks figures" aria-describedby="tip-how">?</button>
+        <span class="tip-text" role="tooltip" id="tip-how">NumCheck reads slide figures and searches Excel using metric labels, periods, units, and layout. It compares the source value at the slide’s displayed precision. Inspect opens the original evidence. A verified figure reconciles to the supplied workbook. NumCheck flags figures it cannot trace. Local review needs no AI account or credits.</span>
+      </div>
       <button type="button" class="btn small" id="chatgpt-shortcut">Connect ChatGPT</button>
       <details class="settings" id="settings">
         <summary>
@@ -80,7 +85,11 @@
         </summary>
         <div class="settings-body">
           <div class="field">
-            <label for="set-llm">AI label assistance</label>
+            <div class="field-heading">
+              <label for="set-llm">AI label assistance</label>
+              <button type="button" class="tip-trigger" aria-label="What AI adds" aria-describedby="tip-ai">?</button>
+              <span class="tip-text" role="tooltip" id="tip-ai">AI can suggest which candidate label best describes a figure. Use it on demand in Inspect, or opt in to automatic assistance. The provider receives labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. AI may leave a figure unresolved. Requests use the selected provider allowance.</span>
+            </div>
             <select id="set-llm"><option value="off">Off (deterministic only)</option></select>
             <p class="note" id="llm-note">Checks slide numbers against Excel locally.</p>
             <div class="provider-fields" id="provider-fields" hidden>
@@ -104,6 +113,7 @@
               <p class="note" id="provider-setup"></p>
               <label for="llm-redact">Terms to redact <span class="note">(optional)</span></label>
               <textarea id="llm-redact" rows="2" maxlength="2000" placeholder="One client, deal or project name per line"></textarea>
+              <label class="check"><input type="checkbox" id="llm-auto"> Use AI during reviews to resolve ambiguous labels</label>
               <button class="btn small" id="test-provider" type="button">Check connection</button>
               <p class="note" id="provider-status" role="status"></p>
             </div>
@@ -331,6 +341,13 @@
     </section>
     <section aria-labelledby="workbookPaneTitle">
       <h3 id="workbookPaneTitle">Excel</h3>
+      <div class="source-tools" id="sourceTools" hidden>
+        <div class="evidence-actions">
+          <button type="button" class="btn small inspect-btn" id="findSources">Find possible sources</button>
+          <button type="button" class="btn small" id="askSourceAI" hidden>Ask AI to suggest a source</button>
+        </div>
+        <p class="note" id="sourceDiscoveryStatus" role="status"></p>
+      </div>
       <div class="evidence-preview-body" id="workbookPreview" aria-live="polite"></div>
     </section>
   </div>

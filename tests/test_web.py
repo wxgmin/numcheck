@@ -395,6 +395,36 @@ def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_pa
         assert client.get(slide["download"]).status_code == 404
 
 
+def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
+    calls = []
+
+    def rank(entries, config, warnings):
+        calls.append(entries[0])
+        assert all(c["ref"].startswith("candidate-") for c in entries[0]["candidates"])
+        assert "+12.0%" not in str(entries)
+        return {"0": "candidate-1"}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("numcheck.web.source_search.resolve_ambiguous", rank)
+    app = create_app()
+    with app.test_client() as client:
+        job = client.post("/api/demo", headers=HDR).get_json()["job_id"]
+        assert _wait(client, job)["status"] == "done"
+        base = f"/api/jobs/{job}"
+        original = client.get(base + "/result").get_json()
+        issue = next(i for i in original["issues"] if i["deck_value"] == "+12.0%" and i["slide_number"] == 2)
+        query = f"?issue={issue['id']}"
+        endpoint = base + "/evidence/sources" + query
+        local = client.post(endpoint, headers=HDR).get_json()
+        assert local["count"] > 0 and not calls and not local["recommended"]
+        ai = client.post(endpoint, headers=HDR, data={"llm": "ollama"}).get_json()
+        assert ai["recommended"] and len(calls) == 1
+        workbook = client.get(base + "/evidence/workbook", query_string={"issue": issue["id"], "cell": ai["recommended"]})
+        assert workbook.status_code == 200
+        assert workbook.get_json()["candidate_check"]
+        assert client.get(base + "/result").get_json() == original
+
+
 def test_security_headers(client):
     r = client.get("/api/health")
     assert r.get_json()["ok"] is True

@@ -109,8 +109,13 @@ source-driven review, enable **Require label evidence** to leave numeric
 coincidences unresolved. Review the Coverage and Warnings tabs before using
 the exported reports.
 
-**AI label assistance** is optional and only breaks ties between existing
-source candidates. Select a provider, enter its model ID and API key if
+**Find possible sources** in Inspect searches workbook labels, units, and periods
+locally for unresolved figures. Select an optional provider to ask AI to recommend
+a candidate from that shortlist. Inspect shows the candidate cell and checks the
+value locally. Source confirmations can be included in the review handoff.
+Select the automatic-assistance checkbox to also use AI during reviews.
+
+Select a provider, enter its model ID and API key if
 needed, then use **Check connection**. The check sends a synthetic label pair
 and exercises the selected model. OpenAI and Anthropic use platform API
 keys. OpenRouter offers models from multiple vendors. Jev uses a Vercel AI

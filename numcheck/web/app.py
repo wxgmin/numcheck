@@ -29,12 +29,16 @@ from numcheck import __version__
 from numcheck.config import Config, load_config
 from numcheck.demo import ASSET_DIR, DEMO_FILES, build_demo
 from numcheck.extraction import fileio
+from numcheck.extraction.xlsx_extractor import extract_model_full
 from numcheck.llm.chatgpt import ChatGPTConnection
 from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
 from numcheck.llm.factory import PROVIDERS, default_model, resolve_ambiguous
-from numcheck.models import NumCheckInputError, ReviewResult, ReviewWarning
+from numcheck.matching.index import ModelIndex
+from numcheck.matching.normalizer import compare
+from numcheck.models import ModelValue, NumCheckInputError, ReviewResult, ReviewWarning
 from numcheck.report import MATCH_ROW_CAP, result_to_dict
 from numcheck.web.evidence import PreviewUnavailable, slide_preview, workbook_preview
+from numcheck.web.source_search import possible_sources, suggest_source
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +98,9 @@ class Job:
     last_access: float = field(default_factory=time.time)
     future: Future | None = None
     cfg: Config | None = None
+    source_index: ModelIndex | None = field(default=None, repr=False)
+    source_options: dict[str, list[tuple[ModelValue, str]]] = field(default_factory=dict, repr=False)
+    source_lock: Any = field(default_factory=threading.Lock, repr=False)
     slide_previews: dict[tuple, dict] = field(default_factory=dict, repr=False)
     preview_lock: Any = field(default_factory=threading.Lock, repr=False)
 
@@ -709,6 +716,31 @@ def create_app(config_path: str | None = None) -> Flask:
             result["message"] = "This slide could not be rendered. Open the original PowerPoint."
         return jsonify(result)
 
+    @app.post("/api/jobs/<job_id>/evidence/sources")
+    def evidence_sources(job_id: str):
+        job = find_job(job_id)
+        _, match = get_evidence(job)
+        if match is None or match.status not in ("unmatched", "ambiguous", "matched_value_only"):
+            raise RequestError("Source discovery is available for unresolved figures.", 422)
+        cfg = job.cfg or Config()
+        with job.source_lock:
+            if job.source_index is None:
+                values = [value for path in job.paths["models"] for value in extract_model_full(path, cfg).values]
+                job.source_index = ModelIndex(values, cfg)
+            candidates = job.source_options.get(match.deck.uid)
+            if candidates is None:
+                candidates = possible_sources(match.deck, job.source_index)
+                job.source_options[match.deck.uid] = candidates
+        recommendation = ""
+        message = ""
+        if candidates and request.form.get("llm", "off") != "off":
+            ai_cfg = _load_cfg(config_path)
+            apply_provider_overrides(ai_cfg, request.form, local_connection())
+            warnings: list[ReviewWarning] = []
+            recommendation = suggest_source(match.deck, candidates, ai_cfg, warnings)
+            message = warnings[0].message if warnings else ("" if recommendation else "AI did not select a source.")
+        return jsonify({"count": len(candidates), "recommended": recommendation, "message": message})
+
     @app.get("/api/jobs/<job_id>/evidence/workbook")
     def evidence_workbook(job_id: str):
         job = find_job(job_id)
@@ -716,14 +748,20 @@ def create_app(config_path: str | None = None) -> Flask:
         source = issue.source_cell if issue is not None else (match.model.ref if match.model else "")
         options = []
         if match is not None:
-            options = list({m.ref: m for m in [match.model, *match.candidates, match.old_model] if m is not None}.values())
+            discovered = [value for value, _ in job.source_options.get(match.deck.uid, [])]
+            options = list({m.ref: m for m in [match.model, *match.candidates, match.old_model, *discovered]
+                            if m is not None}.values())
         selection = request.args.get("cell")
         selected = next((m for m in options if m.ref == (selection or source)), None)
         workbooks = {path.name: (slot, path, name) for slot, path, name in originals(job) if slot != "deck"}
-        result = {"sources": [
+        discovered_refs = {value.ref for value in discovered} if match is not None else set()
+        result = {"can_discover": match is not None and match.status in ("unmatched", "ambiguous", "matched_value_only"),
+                  "sources": [
             {"ref": m.ref, "label": f"{workbooks[m.workbook][2]} · {m.sheet_name}!{m.cell_address}"
              if m.workbook in workbooks else m.ref,
-             "prior": m is match.old_model, "selected": m is selected} for m in options
+             "prior": m is match.old_model, "selected": m is selected,
+             "possible": m.ref in discovered_refs,
+             "metric": " · ".join(filter(None, (m.row_label, m.col_label)))} for m in options
         ]}
         if selected is None:
             result["message"] = "Choose a candidate cell to inspect." if options else "This finding has no linked workbook cell."
@@ -733,6 +771,11 @@ def create_app(config_path: str | None = None) -> Flask:
             result["message"] = "The workbook could not be mapped to an original upload."
             return jsonify(result)
         slot, path, name = workbook
+        if selected.ref in discovered_refs:
+            comparison = compare(match.deck, selected, job.cfg or Config())
+            result["candidate_check"] = (
+                "Value reconciles at the slide’s precision." if comparison and comparison.ok else
+                "Value differs at the slide’s precision." if comparison else "These values could not be compared.")
         result.update({"file": name, "slot": slot, "download": f"/api/jobs/{job.id}/original/{slot}"})
         try:
             result.update(workbook_preview(path, selected, top=request.args.get("row", type=int),

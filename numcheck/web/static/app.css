@@ -249,6 +249,7 @@ button { cursor: pointer; }
   color: var(--ink); border: 1px solid var(--field-edge); border-radius: var(--radius); font-size: 12px;
 }
 .tip-trigger:is(:hover, :focus) + .tip-text, .tip-text:hover { display: block; }
+.tip-trigger:focus:not(:hover) + .tip-text { pointer-events: none; }
 .field input:disabled, .field select:disabled { background: var(--surface-2); color: var(--ink-2); cursor: not-allowed; }
 .note { font-size: 12px; color: var(--ink-2); }
 .check { display: flex; align-items: flex-start; gap: 8px; }
@@ -600,3 +601,7 @@ kbd { font-family: var(--font-mono); font-size: 12px; border: 1px solid var(--li
   #issueTable .issue-inspect { grid-column: 1 / -1; padding-top: .35rem; }
 }
 .evidence-grid .sheet-label { max-width: clamp(7.5rem, 30vw, 12rem); }
+
+.source-tools { margin-bottom: .4rem; }
+.source-tools .note:empty { display: none; }
+.source-tools .note { margin: .2rem 0 0; }
