@@ -4,15 +4,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import secrets
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
+
+from numcheck.llm.session_store import SessionStore, state_directory
 
 AUTH = "https://auth.openai.com"
 RESOURCE = "https://api.openai.com/v1"
@@ -36,7 +36,7 @@ def _request(url, *, form=None, token=None):
 
 
 def _host_id() -> str:
-    directory = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".config") / "NumCheck"
+    directory = state_directory()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / "chatgpt-host-id"
     try:
@@ -68,22 +68,28 @@ def _credentials(body: dict, client_id: str, previous: dict | None = None) -> di
         raise ConnectionError("ChatGPT did not return a renewable plan connection.")
     return {**previous, "client_id": client_id, "access_token": body["access_token"],
             "refresh_token": body.get("refresh_token", previous.get("refresh_token")), "scope": " ".join(scopes),
-            "expires": time.monotonic() + float(body.get("expires_in", 300))}
+            "expires": time.time() + float(body.get("expires_in", 300))}
 
 
 class ChatGPTConnection:
-    """Credentials stay in the local process. Only the installation ID is persisted."""
+    """Restore the local account and serialize refresh across app instances."""
 
     def __init__(self):
         self.lock = threading.RLock()
-        self.current: dict | None = None
+        self.store = SessionStore()
         self.pending = False
         self.message = ""
 
     def status(self) -> dict:
         with self.lock:
-            return {"connected": self.current is not None, "pending": self.pending,
-                    "account": self.current["account"] if self.current else "", "message": self.message}
+            try:
+                with self.store.locked() as path:
+                    current = self.store.read(path)
+            except (OSError, ValueError):
+                current = None
+                self.message = "NumCheck could not read its saved ChatGPT connection."
+            return {"connected": current is not None, "pending": self.pending,
+                    "account": current["account"] if current else "", "message": self.message}
 
     def start(self) -> str:
         try:
@@ -119,7 +125,8 @@ class ChatGPTConnection:
                     saved = _credentials(body, client_id)
                     saved["account"] = str(identity.get("email") or "ChatGPT account")
                     with self.lock:
-                        self.current = saved
+                        with self.store.locked() as path:
+                            self.store.write(path, saved)
                         self.message = ""
                     return True, "ChatGPT connected. You can close this tab and return to NumCheck."
                 except ConnectionError as exc:
@@ -155,17 +162,22 @@ class ChatGPTConnection:
 
     def token(self) -> str:
         with self.lock:
-            if self.current is None:
-                raise ConnectionError("Connect your ChatGPT account first.")
-            if self.current["expires"] - time.monotonic() < 60:
-                try:
-                    body = _request(TOKEN_URL, form={"grant_type": "refresh_token", "resource": RESOURCE,
-                                                    "client_id": self.current["client_id"],
-                                                    "refresh_token": self.current["refresh_token"]})
-                    self.current = _credentials(body, self.current["client_id"], self.current)
-                except Exception:
-                    raise ConnectionError("ChatGPT could not renew the connection. Try again or reconnect.") from None
-            return self.current["access_token"]
+            try:
+                with self.store.locked() as path:
+                    current = self.store.read(path)
+                    if current is None:
+                        raise ConnectionError("Connect your ChatGPT account first.")
+                    if current["expires"] - time.time() < 60:
+                        body = _request(TOKEN_URL, form={"grant_type": "refresh_token", "resource": RESOURCE,
+                                                        "client_id": current["client_id"],
+                                                        "refresh_token": current["refresh_token"]})
+                        current = _credentials(body, current["client_id"], current)
+                        self.store.write(path, current)
+                    return current["access_token"]
+            except ConnectionError:
+                raise
+            except Exception:
+                raise ConnectionError("ChatGPT could not renew the connection. Try again or reconnect.") from None
 
     def models(self) -> list[dict]:
         token = self.token()
@@ -180,15 +192,20 @@ class ChatGPTConnection:
         with self.lock:
             if self.pending:
                 raise ConnectionError("Finish the open sign-in attempt before disconnecting.")
-            session, self.current = self.current, None
-            self.message = ""
-        if session:
             try:
-                _request(AUTH + "/api/accounts/oauth/revoke", form={"token": session["refresh_token"],
-                         "client_id": session["client_id"], "token_type_hint": "refresh_token"})
-            except Exception:
-                with self.lock:
+                with self.store.locked() as path:
+                    session = self.store.read(path)
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                raise ConnectionError("NumCheck could not remove the saved ChatGPT connection.") from None
+            self.message = ""
+            if session:
+                try:
+                    _request(AUTH + "/api/accounts/oauth/revoke", form={"token": session["refresh_token"],
+                             "client_id": session["client_id"], "token_type_hint": "refresh_token"})
+                except Exception:
                     self.message = "Disconnected locally. Remote revocation could not be confirmed."
+
         return self.status()
 
 

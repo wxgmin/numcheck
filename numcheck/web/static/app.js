@@ -196,7 +196,7 @@
     if (provider && !provider.available && !needsKey && id !== "codex" && id !== "chatgpt") setup.textContent = provider.reason + " ";
     if (provider && provider.available && needsKey) setup.textContent += "A server credential is configured where required. An entered key overrides it. ";
     if (id === "openai-compatible" && provider && !provider.available) setup.textContent = provider.reason;
-    if (id === "chatgpt") setup.textContent = "Uses your eligible ChatGPT plan for label matching. The connection lasts while NumCheck is running.";
+    if (id === "chatgpt") setup.textContent = "Uses your eligible ChatGPT plan for label matching. NumCheck saves your connection on this computer and renews it when needed.";
     if (links[id]) setup.appendChild(el("a", { href: links[id][1], target: "_blank", rel: "noopener", text: links[id][0] }));
   }
 

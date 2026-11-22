@@ -121,8 +121,9 @@ and exercises the selected model. OpenAI and Anthropic use platform API
 keys. OpenRouter offers models from multiple vendors. Jev uses a Vercel AI
 Gateway key and can abstain on low-probability choices. Ollama uses a running
 local model. **Connect ChatGPT** opens OpenAI authorization for eligible
-ChatGPT plans, then loads the account’s models. The local server keeps the
-connection in memory until you close NumCheck or disconnect. The OAuth
+ChatGPT plans, then loads the account’s models. NumCheck retains the
+connection in protected local storage and refreshes it when needed. Disconnect
+removes the local session and requests revocation. The OAuth
 connection is available at the app's local `127.0.0.1` address.
 ChatGPT via Codex uses the installed CLI's `codex login`
 session (`NUMCHECK_CODEX_BIN` can point to an executable outside PATH).

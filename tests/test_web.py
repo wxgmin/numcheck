@@ -301,13 +301,16 @@ def test_provider_connection_from_form(client, monkeypatch):
     assert client.post("/api/providers/test", data={"llm": "openai"}, headers=HDR).status_code == 422
 
 
-def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch):
+def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch, tmp_path):
     from urllib.parse import parse_qs, urlencode, urlsplit
     from urllib.request import urlopen
 
     from numcheck.llm import chatgpt
 
     def request(url, *, form=None, token=None):
+        if url == chatgpt.TOKEN_URL and form["grant_type"] == "refresh_token":
+            assert form["refresh_token"] == "private-refresh"
+            return {"access_token": "rotated-access", "refresh_token": "rotated-refresh", "expires_in": 3600}
         if url == chatgpt.TOKEN_URL:
             assert form["client_id"] == "issued-client" and form["code"] == "example-code"
             assert form["code_verifier"] and form["redirect_uri"] == redirect
@@ -316,9 +319,10 @@ def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch):
         if url.endswith("/models"):
             assert token == "private-access"
             return {"models": [{"visibility": "list", "slug": "test-model", "display_name": "Test model"}]}
-        assert url.endswith("/revoke") and form["token"] == "private-refresh"
+        assert url.endswith("/revoke") and form["token"] == "rotated-refresh"
         return {}
 
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(chatgpt, "_host_id", lambda: "urn:uuid:583e1c1c-ca3a-429c-8608-6a08869660df")
     monkeypatch.setattr(chatgpt, "_request", request)
     monkeypatch.setattr(chatgpt, "_identity", lambda token, client_id, nonce: {"email": "analyst@example.com"})
@@ -342,7 +346,17 @@ def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch):
     assert "private-access" not in str(status)
     assert client.get("/api/chatgpt/models", **local).get_json()["models"][0]["id"] == "test-model"
     assert client.post("/api/providers/test", data={"llm": "chatgpt", "llm_model": "test-model"}, **local).status_code == 200
+    restored = chatgpt.ChatGPTConnection()
+    assert restored.status()["account"] == "analyst@example.com"
+    assert restored.token() == "private-access"
+    with restored.store.locked() as path:
+        saved = restored.store.read(path)
+        saved["expires"] = 0
+        restored.store.write(path, saved)
+    assert restored.token() == "rotated-access"
+    assert chatgpt.ChatGPTConnection().token() == "rotated-access"
     assert not client.post("/api/chatgpt/disconnect", **local).get_json()["connected"]
+    assert not restored.status()["connected"]
 
 
 def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_path, monkeypatch):
