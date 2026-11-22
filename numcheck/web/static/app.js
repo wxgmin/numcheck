@@ -1015,7 +1015,8 @@
         differs: "Value differs", unknown: "Value unconfirmed" };
       data.sources.forEach(function (source) {
         select.appendChild(el("option", { value: source.ref,
-          text: (source.prior ? "Prior model · " : source.ref === data.source_suggestion ? "AI suggestion · " :
+          text: (source.prior ? "Prior model · " : source.ref === data.ai_source ? "AI-selected · " :
+            source.ref === data.source_suggestion ? "AI suggestion · " :
             (source.comparison ? statusLabels[source.comparison] + " · " : "")) +
             (source.label || source.ref) + (source.display_value ? " · " + source.display_value : "") +
             (source.possible && source.metric ? " · " + source.metric : "") }));
@@ -1128,12 +1129,17 @@
       var form = new FormData();
       if (useAI) appendProviderSettings(form);
       find.disabled = ask.disabled = true;
-      discovery.textContent = useAI ? "Asking AI to compare the candidate labels…" : "Searching workbook labels locally…";
+      discovery.textContent = useAI ? "Identifying the best workbook source…" : "Searching workbook labels locally…";
       try {
         var result = await api("POST", base + "sources?" + query, form);
         if (run !== previewSequence) return;
         ask.hidden = !aiConfigured || !result.ai_eligible;
-        discovery.textContent = result.message || (result.recommended ? "AI suggested a source. Inspect the cell before confirming." :
+        var source = result.recorded_source;
+        if (source && issueId !== undefined) {
+          setReview(issueId, { aiSource: source }, S.drawerId !== issueId);
+        }
+        discovery.textContent = result.message || (source ?
+          "AI recorded " + source.file + " · " + source.sheet + "!" + source.address + "." :
           (result.count ? "Found " + plural(result.count, "possible source") + ". Check the value and label." :
             "No plausible workbook cells were found."));
         loadCell(result.recommended);
@@ -1174,10 +1180,13 @@
         if (run === previewSequence && index === requestIndex) {
           var focused = workbook.contains(document.activeElement), move = document.activeElement.dataset.move;
           tools.hidden = !data.can_discover;
+          if (data.can_discover && !data.source_search_done && !discovery.textContent) ask.hidden = !aiConfigured;
           if (data.can_discover && data.source_search_done && !discovery.textContent) {
             find.hidden = true;
             ask.hidden = !aiConfigured || !data.ai_eligible;
-            discovery.textContent = data.source_suggestion ? "AI suggested this source. Inspect the workbook evidence to confirm it."
+            var recorded = data.sources.find(function (source) { return source.ref === data.ai_source; });
+            discovery.textContent = recorded ? "AI recorded " + recorded.label + "."
+              : data.source_suggestion ? "AI suggested this source. Inspect the workbook evidence to confirm it."
               : data.possible_count ? "Found " + plural(data.possible_count, "possible source") + ". Check the value and label."
                 : "No plausible workbook cells were found.";
           }
@@ -1270,6 +1279,8 @@
       kvRow("Check", i.check ? i.check.replace(/_/g, " ") : ""), kvRow("Confidence", i.confidence === null || i.confidence === undefined ? "" : Math.round(i.confidence * 100) + "%", true),
       kvRow("Shape", i.shape_id, true)
     );
+    if (rv.aiSource) kv.push.apply(kv, kvRow("AI-selected source",
+      rv.aiSource.file + " · " + rv.aiSource.sheet + "!" + rv.aiSource.address, true));
     if (rv.confirmedSource) kv.push.apply(kv, kvRow("Confirmed for handoff",
       rv.confirmedSource.file + " · " + rv.confirmedSource.sheet + "!" + rv.confirmedSource.address, true));
     if (kv.length) body.appendChild(el("section", null, [el("div", { class: "detail-label", text: "Source" }), el("dl", { class: "kv" }, kv)]));

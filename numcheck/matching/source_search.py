@@ -213,7 +213,7 @@ def ai_candidates(deck, candidates, config):
     return supported
 
 
-def suggest_sources(targets, config, warnings: list[ReviewWarning]) -> dict[str, str]:
+def suggest_sources(targets, config, warnings: list[ReviewWarning], *, comparison_config=None) -> dict[str, str]:
     """Submit bounded shortlists together using opaque references and digit-masked source names."""
     entries, refs = [], {}
     for entry_id, deck, candidates in targets:
@@ -222,6 +222,12 @@ def suggest_sources(targets, config, warnings: list[ReviewWarning]) -> dict[str,
         entry = build_entry(entry_id, deck, _source_label(deck), deck.period, candidates)
         refs[entry_id] = {}
         for i, candidate in enumerate(entry["candidates"]):
+            if comparison_config is not None:
+                comparison = source_comparison(deck, candidates[i][0], comparison_config)
+                candidate["value_check"] = (
+                    "unknown" if comparison is None else "differs" if not comparison.ok
+                    else "reconciles with inferred units" if comparison.inferred else "reconciles"
+                )
             handle = f"candidate-{i + 1}"
             refs[entry_id][handle] = candidate["ref"]
             candidate["ref"] = handle

@@ -434,9 +434,24 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
         assert local["count"] > 0 and not calls and not local["recommended"]
         ai = client.post(endpoint, headers=HDR, data={"llm": "ollama"}).get_json()
         assert ai["recommended"] and len(calls) == 1
-        workbook = client.get(base + "/evidence/workbook", query_string={"issue": issue["id"], "cell": ai["recommended"]})
+        workbook = client.get(base + "/evidence/workbook" + query)
         assert workbook.status_code == 200
-        assert workbook.get_json()["candidate_check"]
+        view = workbook.get_json()
+        assert view["candidate_check"] and view["ai_source"] == ai["recommended"]
+        assert ai["recorded_source"]["address"] == view["address"]
+        assert ai["recorded_source"]["sheet"] == view["sheet"]
+        assert len(view["sources"]) == local["count"]
+        assert any(c["selected"] and c["ref"] == ai["recommended"] for c in view["sources"])
+
+        # A stale displayed value can still have an identifiable workbook source.
+        stale = next(m for m in original["matches"] if m["raw_text"] == "8.5%" and m["slide_number"] == 9)
+        stale_query = f"?figure={stale['deck_uid']}"
+        ai = client.post(base + "/evidence/sources" + stale_query, headers=HDR, data={"llm": "ollama"}).get_json()
+        assert ai["recorded_source"]["address"] == "C20"
+        assert calls[-1]["candidates"][0]["value_check"] == "differs"
+        view = client.get(base + "/evidence/workbook" + stale_query).get_json()
+        assert view["address"] == "C20" and "differs" in view["candidate_check"]
+        assert len(view["sources"]) == 4
         assert client.get(base + "/result").get_json() == original
 
 
@@ -488,7 +503,7 @@ def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monk
         range_row = next(m for m in result["matches"] if m["raw_text"] == "8.5%" and m["slide_number"] == 9)
         assert range_row["status"] == "unmatched" and not range_row["source_suggestion"]
         inspected = client.get(base + "/evidence/workbook", query_string={"figure": range_row["deck_uid"]}).get_json()
-        assert len(inspected["sources"]) == 4 and not inspected["ai_eligible"]
+        assert len(inspected["sources"]) == 4 and inspected["ai_eligible"]
         assert all(cell["display_value"] and cell["comparison"] for cell in inspected["sources"])
         differing = next(cell for cell in inspected["sources"] if cell["comparison"] == "differs")
         selected = client.get(base + "/evidence/workbook", query_string={

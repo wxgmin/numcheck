@@ -103,6 +103,7 @@ class Job:
     source_index: ModelIndex | None = field(default=None, repr=False)
     source_options: dict[str, tuple[list[tuple[ModelValue, str]], list[tuple[ModelValue, str]]]] = field(
         default_factory=dict, repr=False)
+    ai_sources: dict[str, str] = field(default_factory=dict, repr=False)
     source_lock: Any = field(default_factory=threading.Lock, repr=False)
     source_review: dict[str, Any] = field(default_factory=dict)
     next_issue_id: int = 1
@@ -785,23 +786,39 @@ def create_app(config_path: str | None = None) -> Flask:
         index = mgr.source_index(job) if match.source_options is None else None
         with job.source_lock:
             if match.source_options is not None:
-                candidates, eligible = match.source_options, match.source_ai_options
+                candidates = match.source_options
             else:
                 cached = job.source_options.get(match.deck.uid)
                 if cached is None:
                     cached = discover_sources(match.deck, index)
                     job.source_options[match.deck.uid] = cached
-                candidates, eligible = cached
+                candidates, _ = cached
         recommendation = ""
+        recorded = None
         message = ""
-        if eligible and request.form.get("llm", "off") != "off":
+        if candidates and request.form.get("llm", "off") != "off":
             ai_cfg = _load_cfg(config_path)
             apply_provider_overrides(ai_cfg, request.form, local_connection())
             warnings: list[ReviewWarning] = []
-            recommendation = suggest_sources([("0", match.deck, eligible)], ai_cfg, warnings).get("0", "")
-            message = warnings[0].message if warnings else ("" if recommendation else "AI did not select a source.")
-        return jsonify({"count": len(candidates), "ai_eligible": bool(eligible),
-                        "recommended": recommendation, "message": message})
+            recommendation = suggest_sources(
+                [("0", match.deck, candidates)], ai_cfg, warnings,
+                comparison_config=display_precision(job.cfg or Config()),
+            ).get("0", "")
+            selected = next((value for value, _ in candidates if value.ref == recommendation), None)
+            if selected is not None:
+                workbook = next(((slot, name) for slot, path, name in originals(job)
+                                 if slot.startswith("model-") and path.name == selected.workbook), None)
+                if workbook is not None:
+                    slot, name = workbook
+                    recorded = {"slot": slot, "file": name, "sheet": selected.sheet_name,
+                                "address": selected.cell_address}
+                    with job.source_lock:
+                        job.ai_sources[match.deck.uid] = recommendation
+            message = (warnings[0].message if warnings else
+                       "" if recorded else "AI could not identify a best source from these candidates.")
+        return jsonify({"count": len(candidates), "ai_eligible": bool(candidates),
+                        "recommended": recommendation if recorded else "",
+                        "recorded_source": recorded, "message": message})
 
     @app.get("/api/jobs/<job_id>/evidence/workbook")
     def evidence_workbook(job_id: str):
@@ -810,6 +827,7 @@ def create_app(config_path: str | None = None) -> Flask:
         source = ((issue.source_cell if issue is not None else "")
                   or (match.model.ref if match is not None and match.model else ""))
         options = []
+        ai_source = ""
         discovered, eligible, cached = [], [], None
         unresolved = match is not None and match.status in UNRESOLVED
         cfg = job.cfg or Config()
@@ -822,7 +840,9 @@ def create_app(config_path: str | None = None) -> Flask:
             if unresolved and cached is not None:
                 options = discovered
                 preferred = eligible[0][0].ref if len(eligible) == 1 else ""
-                source = match.source_suggestion or preferred or (options[0].ref if len(options) == 1 else "")
+                saved_ref = job.ai_sources.get(match.deck.uid, "")
+                ai_source = saved_ref if any(m.ref == saved_ref for m in options) else ""
+                source = ai_source or match.source_suggestion or preferred or (options[0].ref if len(options) == 1 else "")
             else:
                 prior_candidates = [value for value in match.candidates if unresolved or value.ref == source]
                 options = list({m.ref: m for m in [match.model, *prior_candidates, match.old_model]
@@ -846,7 +866,8 @@ def create_app(config_path: str | None = None) -> Flask:
 
         result = {"can_discover": unresolved,
                   "source_search_done": cached is not None,
-                  "ai_eligible": unresolved and bool(eligible),
+                  "ai_eligible": unresolved and bool(discovered),
+                  "ai_source": ai_source,
                   "source_suggestion": match.source_suggestion if match is not None else "",
                   "possible_count": len(discovered_refs),
                   "sources": [

@@ -118,8 +118,12 @@ always runs both steps, starting with local source search.
 A figure moves to Verified only when its source is distinct, its workbook label
 and period support the match, and the value reconciles at the slide's displayed
 precision. Inspect also lists related workbook cells and shows how their values
-compare with the slide. AI receives labels only for eligible reconciling cells. Coverage and
-report downloads update when a source is verified.
+compare with the slide. **Identify and record source with AI** selects and
+opens the best-supported cell and records its workbook, sheet and address in
+the finding and review handoff. Other possible cells remain available in
+Inspect. This action can identify a source whose value differs when the label,
+period and scope support it. The provider receives masked labels and a local
+comparison category. Coverage and report downloads update when a source is verified.
 
 Select a provider, enter its model ID and API key if
 needed, then use **Check connection**. The check sends a synthetic label pair
