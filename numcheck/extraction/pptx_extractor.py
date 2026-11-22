@@ -1270,6 +1270,8 @@ def _process_slide(slide_idx: int, slide, prs_height: int, config: Config) -> tu
             ctx.warnings.append(ReviewWarning("shape_error", f"Could not read a table/chart on slide {slide_idx} "
                                               f"({exc}).", slide_number=slide_idx, count=1))
 
+    _resolve_short_callouts(ctx, items, slide.shapes)
+
     if config.read_speaker_notes:
         _extract_notes(ctx, slide)
 
@@ -1282,6 +1284,7 @@ def _process_slide(slide_idx: int, slide, prs_height: int, config: Config) -> tu
     return ctx, info
 
 
+_PROJECTION_PREFIX = re.compile(r"^(?:management|the company|the model|we)\s+(?:projects?|forecasts?|expects?)\s+", re.I)
 _GUIDANCE_RE = re.compile(
     r"\b(target(?:s|ed|ing)?|guidance|guid(?:e|es|ed|ing)|outlook|expects?|expected|aims?|ambitions?|"
     r"medium[- ]term|long[- ]term|aspiration(?:al)?|goal|plans? to|forecast(?:s)?|projected to)\b", re.I)
@@ -1372,6 +1375,11 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
                     dn.context = f"{caption}: {dn.raw_text}"
                     if ctx.hint and ctx.hint.per_share_exception and dn.unit_source == ctx.hint.source and PER_SHARE_RE.search(caption):
                         dn.scale, dn.scale_known = "", True
+            projected_label = _PROJECTION_PREFIX.sub("", dn.label)
+            if projected_label != dn.label and projected_label and dn.period:
+                dn.label = projected_label
+                if "guidance" not in dn.qualifiers:
+                    dn.qualifiers.append("guidance")
             if guidance and "guidance" not in dn.qualifiers:
                 dn.qualifiers.append("guidance")
             if dn.period:
@@ -1386,6 +1394,56 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
                 dn.period = last_period
         ctx.numbers.extend(nums)
         ctx.skipped.extend(skipped)
+
+
+_BARE_STATISTIC = re.compile(r"median|mean|average", re.I)
+_YOY_CAPTION = re.compile(r"yoy|y/y|year[- ]over[- ]year", re.I)
+
+
+def _contains_callout(container, shape) -> bool:
+    return (container.left <= shape.left and container.top <= shape.top
+            and shape.left + shape.width <= container.left + container.width
+            and shape.top + shape.height <= container.top + container.height)
+
+
+def _resolve_short_callouts(ctx: _SlideCtx, items: list[_TextItem], shapes) -> None:
+    """Resolve shorthand only when slide structure identifies the missing metric."""
+    series = {(n.chart_series_name, n.period) for n in ctx.numbers
+              if n.source == Source.CHART and n.unit == "multiple" and n.chart_series_name}
+    boxes = {str(item.shape.shape_id): item for item in items}
+    badges = [n for n in ctx.numbers if n.source == Source.TEXT_BOX and n.unit == "percent" and not n.label
+              and n.shape_id in boxes and any(_YOY_CAPTION.fullmatch(line.strip())
+                                            for line in boxes[n.shape_id].text.splitlines())]
+    if badges:
+        amounts = [n for n in ctx.numbers if n.source == Source.TEXT_BOX and n.unit == "currency"
+                   and n.shape_id in boxes and not n.is_range and n.comparator == "="]
+        containers = [shape for shape in shapes if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE
+                      and shape.has_text_frame and not shape.text_frame.text.strip() and not shape.rotation]
+        for badge in badges:
+            box = boxes[badge.shape_id].shape
+            possible = set()
+            for card in containers:
+                if box._element.getparent() is not card._element.getparent() or not _contains_callout(card, box):
+                    continue
+                inside = [n for n in amounts if boxes[n.shape_id].shape._element.getparent() is card._element.getparent()
+                          and _contains_callout(card, boxes[n.shape_id].shape)]
+                if len(inside) > 1:
+                    continue
+                if inside and inside[0].label and inside[0].period:
+                    possible.add((inside[0].label, inside[0].period))
+            if len(possible) == 1:
+                label, period = possible.pop()
+                badge.label, badge.period = f"{label} growth", period
+
+    if len(series) == 1:
+        metric, period = next(iter(series))
+        if metric.casefold() not in ctx.context_text.casefold():
+            return  # the slide must independently state this is the featured metric
+        for n in ctx.numbers:
+            if (n.source == Source.TEXT_BOX and n.unit == "multiple" and _BARE_STATISTIC.fullmatch(n.label)
+                    and (not n.period or n.period == period)):
+                n.label = f"{n.label} {metric}"
+                n.period = n.period or period
 
 
 def _extract_smartart(ctx: _SlideCtx, slide, shape) -> None:

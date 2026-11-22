@@ -11,6 +11,7 @@ from lxml import etree
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData, XyChartData
 from pptx.enum.chart import XL_CHART_TYPE
+from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.util import Inches, Pt
 
 from numcheck.config import Config
@@ -528,6 +529,24 @@ def test_grouped_numeric_callout_inherits_a_single_caption(tmp_path):
     assert number.label == "FY24A Adjusted EBITDA"
     assert number.period == "fy24"
     assert number.char_start == 0
+
+
+@pytest.mark.parametrize("second_metric", [False, True])
+def test_yoy_badge_requires_a_single_metric_in_its_card(tmp_path, second_metric):
+    prs = new_deck()
+    slide = add_slide(prs, "Operating review")
+    slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(1), Inches(2), Inches(7), Inches(2))
+    slide.shapes.add_textbox(Inches(1.2), Inches(2.2), Inches(3), Inches(.3)).text = "FY25 Net sales $700m"
+    badge = slide.shapes.add_textbox(Inches(5), Inches(2.5), Inches(1), Inches(.7))
+    badge.text = "+6.5%\nYoY"
+    if second_metric:
+        slide.shapes.add_textbox(Inches(1.2), Inches(3.1), Inches(3), Inches(.3)).text = "FY25 Gross profit $150m"
+    figure = by_raw(extract_deck(save(prs, tmp_path)), "+6.5%")
+    if second_metric:
+        assert figure.label == ""
+    else:
+        assert figure.label == "Net sales growth"
+        assert figure.period == "fy25"
 
 
 def test_extended_powerpoint_chart_is_reported_instead_of_silently_skipped(tmp_path):
