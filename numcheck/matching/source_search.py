@@ -299,6 +299,62 @@ def _verified_source(match, index, ranked, truncated, config, suggested):
                    note="Workbook label, period and displayed value corroborate the source.")
 
 
+def _verify_range_pairs(matches, index, precise):
+    """Verify a labelled range using both displayed values and opposite workbook headers."""
+    groups = {}
+    for pos, match in enumerate(matches):
+        deck = match.deck
+        if (deck.range_role and deck.char_end > deck.char_start and deck.comparator == "="
+                and "guidance" not in deck.qualifiers and deck.label):
+            key = (deck.slide_number, deck.shape_id, deck.paragraph_index,
+                   deck.table_row, deck.table_col, deck.context)
+            groups.setdefault(key, []).append(pos)
+
+    def endpoints(match, role):
+        deck = match.deck
+        options = [match.model] if match.status == "matched" else [
+            value for value, _ in match.source_options or ()
+        ]
+        cells = []
+        period = deck.period or index.parts(deck.label).period
+        for value in options:
+            if (value is None or value.hidden or value.unit != deck.unit
+                    or (period and (period_affinity(period, value.period) or 0) < 0.85)):
+                continue
+            base = index.parts(value.col_label).tokens or index.parts(value.row_label).tokens
+            if not base or stat_groups(value.col_label) != {role}:
+                continue
+            comparison = source_comparison(deck, value, precise)
+            if comparison and comparison.ok and not comparison.inferred:
+                cells.append(((value.workbook, value.sheet_name, value.row, base), value, comparison))
+        return cells
+
+    for positions in groups.values():
+        positions.sort(key=lambda pos: matches[pos].deck.char_start)
+        for low_pos, high_pos in zip(positions, positions[1:]):
+            low, high = matches[low_pos], matches[high_pos]
+            if (low.deck.range_role != "low" or high.deck.range_role != "high"
+                    or low.deck.label.casefold() != high.deck.label.casefold()
+                    or low.deck.unit != high.deck.unit
+                    or not all(m.status in UNRESOLVED or m.status == "matched" for m in (low, high))
+                    or not any(m.status in UNRESOLVED for m in (low, high))):
+                continue
+            high_cells = endpoints(high, "max")
+            pairs = [((low_cell, low_check), (high_cell, high_check))
+                     for low_key, low_cell, low_check in endpoints(low, "min")
+                     for high_key, high_cell, high_check in high_cells if low_key == high_key]
+            if len(pairs) != 1:
+                continue
+            for pos, (value, comparison) in zip((low_pos, high_pos), pairs[0], strict=True):
+                match = matches[pos]
+                if match.status in UNRESOLVED:
+                    matches[pos] = replace(
+                        match, model=value, comparison=comparison, status="matched", method="range_pair",
+                        confidence=min(0.8, match.deck.confidence),
+                        note="Both displayed endpoints reconcile to the same labelled workbook range.",
+                    )
+
+
 def review_sources(matches, index, config, warnings, ai_config=None):
     """Search every unresolved figure, then recheck only independently corroborated sources."""
     results = list(matches)
@@ -328,12 +384,13 @@ def review_sources(matches, index, config, warnings, ai_config=None):
             results[pos].source_options = _inspection_sources(deck, index, precise, reconciling)
             if eligible:
                 pending[str(pos)] = (ranked, truncated)
+    _verify_range_pairs(results, index, precise)
     suggestions = {}
     ai_targets = []
     if ai_config is not None:
         ai_targets = [(key, results[int(key)].deck,
                        results[int(key)].source_ai_options)
-                      for key in pending]
+                      for key in pending if results[int(key)].status in UNRESOLVED]
     if ai_targets:
         suggestions = suggest_sources(
             ai_targets, ai_config, warnings,

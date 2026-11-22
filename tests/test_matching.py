@@ -77,6 +77,27 @@ def test_best_source_for_range_endpoint_with_changed_value():
     assert not eligible
 
 
+def test_range_pair_needs_one_workbook_row_with_both_endpoints():
+    config = Config()
+    shared = {"is_range": True, "context": "Revenue of $100m–$120m", "period": "fy24"}
+    decks = [
+        dn("Revenue", 100, "$100m", range_role="low", char_start=11, char_end=16, **shared),
+        dn("Revenue", 120, "$120m", range_role="high", char_start=17, char_end=22, **shared),
+    ]
+    low = mv("Revenue", 100, addr="B2", row=2, col_label="Low", period="fy24")
+    high = mv("Revenue", 120, addr="C2", row=2, col_label="High", period="fy24")
+    other_high = mv("Revenue", 120, addr="C3", row=3, col_label="High", period="fy24")
+    other_low = mv("Revenue", 100, addr="B3", row=3, col_label="Low", period="fy24")
+    for cells, expected in [
+        ([low, high, other_high], ["range_pair", "range_pair"]),
+        ([low, other_high], ["", ""]),
+        ([low, high, other_low, other_high], ["", ""]),
+    ]:
+        matches, _ = review_sources([Match(deck, None, "unmatched") for deck in decks],
+                                    ModelIndex(cells, config), config, [])
+        assert [match.method for match in matches] == expected
+
+
 # --------------------------------------------------------------------------- label parts
 
 

@@ -530,6 +530,10 @@ def scan_paragraph(
             q for q in _terms_in(clause_text, ctx.config.qualifiers) if q not in _ENTITY_QUALIFIERS]
         _apply_delta_semantics(dn, text, n)
         out.append(dn)
+    for low, high in zip(out, out[1:]):
+        if low.range_role == "low" and high.range_role == "high":
+            low.label = low.label or high.label
+            high.label = high.label or low.label
     # footnote markers directly after a number: "$1.2bn(2)" -> footnote_refs ["2"]
     for sk in skipped:
         if sk.skip_reason != "footnote_marker":
@@ -1363,12 +1367,14 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
             continue
         nums, skipped = scan_paragraph(ctx, text, ctx.hint, source=Source.TEXT_BOX, shape_id=shape_id, para_idx=pi)
         guidance = bool(_GUIDANCE_RE.search(text))
+        range_only = (len(nums) == 2 and nums[0].range_role == "low" and nums[1].range_role == "high"
+                      and not text[:nums[0].char_start].strip() and not text[nums[1].char_end:].strip())
         for dn in nums:
             start = text.rfind("\n", 0, dn.char_start) + 1
             end = text.find("\n", dn.char_end)
             end = len(text) if end < 0 else end
             display_line = text[start:end].strip()
-            if not dn.label and not (text[start:dn.char_start] + text[dn.char_end:end]).strip():
+            if not dn.label and (range_only or not (text[start:dn.char_start] + text[dn.char_end:end]).strip()):
                 caption = ""
                 if len(lines) == 2:
                     other = lines[1] if lines[0] == display_line else lines[0]
@@ -1378,7 +1384,7 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
                 if caption:
                     dn.label = _label_text([caption])
                     dn.period = _period_hint([caption]) or dn.period
-                    dn.context = f"{caption}: {dn.raw_text}"
+                    dn.context = f"{caption}: {text.strip() if range_only else dn.raw_text}"
                     if ctx.hint and ctx.hint.per_share_exception and dn.unit_source == ctx.hint.source and PER_SHARE_RE.search(caption):
                         dn.scale, dn.scale_known = "", True
             projected_label = _PROJECTION_PREFIX.sub("", dn.label)
@@ -1396,7 +1402,7 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
                     pre[-24:], re.I))   # "... from 31.0 months in FY24": the comparison period
                 if dn.comparator == "=" and not dn.is_range and not aside:
                     last_period = dn.period
-            elif last_period and dn.comparator == "=":
+            elif last_period and dn.comparator == "=" and not dn.is_range:
                 dn.period = last_period
         ctx.numbers.extend(nums)
         ctx.skipped.extend(skipped)
