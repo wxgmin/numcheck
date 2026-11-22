@@ -1,69 +1,21 @@
-"""Staleness check against a previous model version."""
+"""Staleness check against a previous model version.
+
+Staleness is now decided inside the matching pipeline
+(:func:`numcheck.matching.pipeline.match_deck_to_model` with ``old_model_values``):
+a deck number that mismatches the new model but equals the corresponding old cell
+(same sheet+address, else same label parts + period) ends in ``Match.status == "stale"``
+with ``Match.old_model`` set, and the issue builder turns that into a STALE issue.
+
+``check_staleness`` remains only so older callers keep working; it is a deliberate
+no-op (re-running full matching for the old model would triple the work and
+produce duplicate issues).
+"""
 
 from __future__ import annotations
 
-from numcheck.checks import IssueCollector
-from numcheck.config import Config
-from numcheck.matching.pipeline import match_deck_to_model
-from numcheck.models import DeckNumber, IssueType, ModelValue, format_model_value
+from typing import Any
 
 
-def check_staleness(
-    deck_numbers: list[DeckNumber],
-    new_model_values: list[ModelValue],
-    old_model_values: list[ModelValue],
-    config: Config,
-    collector: IssueCollector,
-) -> None:
-    if not old_model_values:
-        return
-
-    old_matches = match_deck_to_model(deck_numbers, old_model_values, config)
-    new_matches = match_deck_to_model(deck_numbers, new_model_values, config)
-
-    for i, d in enumerate(deck_numbers):
-        old = old_matches[i]
-        new = new_matches[i]
-        if old.status != "matched":
-            continue
-        # Only flag when the deck matches the old model but explicitly mismatches
-        # the new one. Unmatched/ambiguous in the new model means "unverifiable",
-        # not evidence the value changed.
-        if new.status != "mismatch":
-            continue
-
-        new_expected = _find_new_value(old.model, new_model_values, config)
-        expected_str = (
-            f"{format_model_value(new_expected)} ({new_expected.sheet_name}!{new_expected.cell_address})"
-            if new_expected
-            else "changed in new model"
-        )
-        collector.add(
-            slide_number=d.slide_number,
-            deck_value=d.raw_text,
-            expected_value=expected_str,
-            source_cell=f"{old.model.sheet_name}!{old.model.cell_address}" if old.model else "",
-            issue_type=IssueType.STALE,
-            message=(
-                f"'{d.label or d.metric_key}' matches the old model "
-                f"({format_model_value(old.model)}) but the new model value differs"
-            ),
-            metric_key=d.metric_key,
-            shape_id=d.shape_id,
-        )
-
-
-def _find_new_value(
-    old_model: ModelValue | None,
-    new_model_values: list[ModelValue],
-    config: Config,
-) -> ModelValue | None:
-    if old_model is None:
-        return None
-    for mv in new_model_values:
-        if mv.metric_key and mv.metric_key == old_model.metric_key:
-            return mv
-    for mv in new_model_values:
-        if mv.sheet_name == old_model.sheet_name and mv.cell_address == old_model.cell_address:
-            return mv
+def check_staleness(*_args: Any, **_kwargs: Any) -> None:
+    """Compatibility no-op: staleness is derived from matches in the pipeline."""
     return None

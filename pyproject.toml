@@ -4,23 +4,50 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "numcheck"
-version = "0.1.0"
-description = "Investment banking pitchbook number-check tool (PPTX vs XLSX)"
+version = "0.2.0"
+description = "Investment banking pitchbook number check: reconcile a PowerPoint deck against its Excel models"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "python-pptx>=0.6.23",
     "openpyxl>=3.1",
     "lxml>=4.9",
     "rapidfuzz>=3.0",
-    "openai>=1.0",
-    "anthropic>=0.30",
     "jinja2>=3.1",
     "flask>=3.0",
 ]
+
+[project.optional-dependencies]
+openai = ["openai>=3.26"]
+anthropic = ["anthropic>=0.40"]
+llm = ["openai>=3.26", "anthropic>=0.40"]
+ocr = ["pytesseract>=0.3", "pillow>=10", "pymupdf>=1.24"]
+preview = ["pypdfium2>=5.0", "pillow>=10"]
+crypto = ["msoffcrypto-tool>=5.4"]
+all = ["pypdfium2>=5.0", "openai>=3.26", "anthropic>=0.40", "pytesseract>=0.3", "pillow>=10", "pymupdf>=1.24", "msoffcrypto-tool>=5.4"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]
 numcheck = "numcheck.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["numcheck*"]
+
+[tool.setuptools.package-data]
+numcheck = ["default_config.toml", "web/static/*", "demo/assets/*.pptx", "demo/assets/*.xlsx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E501", "B905", "B007"]
+
+[tool.ruff.lint.per-file-ignores]
+# Scenario builders favour compact data-construction code (lambdas, one-line helpers).
+"tests/scenarios/*" = ["E731", "E741", "E702", "F841"]

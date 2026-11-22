@@ -1,58 +1,50 @@
+# NumCheck configuration. Every key is optional; defaults are shown.
+# Lookup order: --config path, then $NUMCHECK_CONFIG, then ./numcheck.toml.
+
 [tolerance]
-relative = 0.006
-absolute = 0.5
+# Numbers are compared at their DISPLAYED precision: "75%" covers 74.5%-75.5%,
+# "$1.2bn" covers $1.15bn-$1.25bn. These settings only add slack on top of that.
+relative = 0.0                   # extra relative slack (0-0.1)
+absolute = 0.0                   # extra absolute slack, in base units
+rounding_mode = "round"          # "round" | "round_or_truncate" (for teams that truncate)
+approx_relative = 0.05           # slack for "c.", "~", "approximately"
+coarse_rounding_threshold = 0.05 # LOW flag when valid rounding hides more than 5% of the value
 
 [matching]
-value_weight = 0.6
-label_weight = 0.4
-ambiguity_band = 0.03
+min_label_score = 0.35
+base_period = ""                 # e.g. "fy24": period assumed for numbers that state none
+include_hidden = true
+value_only_min_digits = 3        # min significant digits to verify a number by value alone
+exclude_sheets = []              # glob patterns, e.g. ["Scratch*", "Old *"]
+deprioritized_sheets = ["*old*", "*backup*", "*bak*", "*archive*", "*scratch*", "*temp*", "*tmp*",
+                        "*draft*", "*copy*", "*prior*", "*superseded*", "*do not use*", "*dnu*", "x_*", "z_*"]
 
 [llm]
-# Provider for fuzzy label disambiguation only. All numeric comparison stays
-# deterministic. Options: off | openai | anthropic | openai-compatible | ollama | codex
+# Used ONLY to choose between candidate cells when labels are ambiguous.
+# It receives labels and headers, never numbers. Off by default.
+# Options: off | openai | anthropic | openai-compatible | ollama | codex
 provider = "off"
-model = "gpt-4o-mini"
-# base_url is for openai-compatible endpoints (e.g. a LiteLLM proxy) or ollama.
-base_url = ""
-# api_key is optional; providers otherwise read their standard env var
-# (OPENAI_API_KEY / ANTHROPIC_API_KEY) or NUMCHECK_LLM_API_KEY.
-api_key = ""
+model = ""                       # empty = provider default
+base_url = ""                    # openai-compatible endpoints / ollama
+api_key = ""                     # prefer OPENAI_API_KEY / ANTHROPIC_API_KEY / NUMCHECK_LLM_API_KEY
+timeout = 60
+batch_size = 25
+redact = []                      # strings replaced with [REDACTED] before sending, e.g. ["Project Atlas"]
 
-key_metrics = [
-    "revenue",
-    "ebitda",
-    "ebit",
-    "eps",
-    "net income",
-    "enterprise value",
-    "equity value",
-    "wacc",
-    "free cash flow",
-    "fcf",
-]
+[extraction]
+ocr = false                      # read numbers inside pictures (LibreOffice + Tesseract)
+max_file_mb = 250
+large_workbook_cells = 2000000   # stream larger workbooks read-only
+read_speaker_notes = false
 
-[unit_scales]
-k = 1000.0
-m = 1000000.0
-mm = 1000000.0
-bn = 1000000000.0
-b = 1000000000.0
-t = 1000000000000.0
+[output]
+fail_on = ""                     # "high" | "medium" | "low": CLI exit code 1 when reached
 
+# Metrics treated as headline figures (raise severity, scale-style checks).
+key_metrics = ["revenue", "ebitda", "ebit", "eps", "net income", "enterprise value", "equity value",
+               "wacc", "free cash flow", "offer price", "premium", "purchase price", "net debt"]
+
+# Extra synonyms/abbreviations (merged with the built-in list). Keys are matched as whole words.
 [abbreviations]
-rev = "revenue"
-ebitda = "ebitda"
-ebit = "ebit"
-ni = "net income"
-eps = "eps"
-ev = "enterprise value"
-eqv = "equity value"
-"eq val" = "equity value"
-fcf = "free cash flow"
-gm = "gross margin"
-cogs = "cogs"
-opex = "opex"
-capex = "capex"
-nwc = "net working capital"
-"d&a" = "d&a"
-"share count" = "shares outstanding"
+# "op inc" = "ebit"
+# "tgt" = "target"

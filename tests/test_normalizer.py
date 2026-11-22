@@ -1,7 +1,6 @@
 """Tests for numeric token parsing and canonicalization."""
 
 from numcheck.matching.normalizer import (
-    ParsedNumber,
     canonical_deck,
     parse_token,
     significant_digits,
