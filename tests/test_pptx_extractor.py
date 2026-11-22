@@ -531,6 +531,16 @@ def test_grouped_numeric_callout_inherits_a_single_caption(tmp_path):
     assert number.char_start == 0
 
 
+def test_numeric_callout_reads_an_aligned_caption_above_it(tmp_path):
+    prs = new_deck()
+    slide = add_slide(prs, "Operating review")
+    slide.shapes.add_textbox(Inches(1), Inches(2), Inches(2), Inches(.3)).text = "FY25 Net sales"
+    slide.shapes.add_textbox(Inches(1), Inches(2.35), Inches(2), Inches(.5)).text = "$700m"
+    slide.shapes.add_textbox(Inches(3.5), Inches(2), Inches(2), Inches(.3)).text = "FY24 EBITDA"
+    number = by_raw(extract_deck(save(prs, tmp_path)), "$700m")
+    assert number.label == "FY25 Net sales" and number.period == "fy25"
+
+
 @pytest.mark.parametrize("second_metric", [False, True])
 def test_yoy_badge_requires_a_single_metric_in_its_card(tmp_path, second_metric):
     prs = new_deck()

@@ -189,7 +189,7 @@ class Config:
     # --- extraction ---
     ocr: bool = False
     max_file_mb: float = 250.0
-    large_workbook_cells: int = 2_000_000   # above this, stream read-only (merged cells unavailable)
+    large_workbook_cells: int = 2_000_000   # above this declared sheet area, stream read-only
     read_speaker_notes: bool = False
     # --- metrics ---
     key_metrics: list[str] = field(default_factory=lambda: list(DEFAULT_KEY_METRICS))

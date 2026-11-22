@@ -227,7 +227,8 @@ def test_blank_rows_and_second_block_with_own_headers(tmp_path):
     assert {v.period for v in res.values if v.row_label == "Total assets"} == {"fy25", "fy26"}
 
 
-def test_merged_company_headers(tmp_path):
+@pytest.mark.parametrize("streaming", [False, True])
+def test_merged_company_headers(tmp_path, streaming):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws["A1"] = "Comps"
@@ -238,7 +239,7 @@ def test_merged_company_headers(tmp_path):
     ws["A4"] = "Revenue"
     for j, v in enumerate((10, 11, 20, 22), start=2):
         ws.cell(4, j, v)
-    res = extract_model_full(save(wb, tmp_path))
+    res = extract_model_full(save(wb, tmp_path), Config(large_workbook_cells=1) if streaming else Config())
     v = {v.cell_address: v for v in res.values}
     assert "Company A" in v["B4"].col_label and "FY24" in v["B4"].col_label
     assert "Company A" in v["C4"].col_label and "FY25" in v["C4"].col_label
@@ -370,7 +371,8 @@ def test_numbers_stored_as_text(tmp_path):
 # ----------------------------------------------------------------- sheets / names
 
 
-def test_hidden_sheet_rows_cols_and_include_hidden(tmp_path):
+@pytest.mark.parametrize("streaming", [False, True])
+def test_hidden_sheet_rows_cols_and_include_hidden(tmp_path, streaming):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Visible"
@@ -384,14 +386,16 @@ def test_hidden_sheet_rows_cols_and_include_hidden(tmp_path):
     hid["A2"], hid["B2"], hid["C2"] = "Revenue", 9, 10
     hid.sheet_state = "hidden"
     p = save(wb, tmp_path)
-    res = extract_model_full(p)
+    config = Config(large_workbook_cells=1) if streaming else Config()
+    res = extract_model_full(p, config)
     v = {(x.sheet_name, x.cell_address): x for x in res.values}
     assert v[("Visible", "B2")].hidden is False
     assert v[("Visible", "B3")].hidden is True
     assert v[("Visible", "D2")].hidden is True
     assert v[("Secret", "B2")].hidden is True
     assert next(s for s in res.sheets if s.name == "Secret").hidden
-    res2 = extract_model_full(p, Config(include_hidden=False))
+    config.include_hidden = False
+    res2 = extract_model_full(p, config)
     v2 = {(x.sheet_name, x.cell_address) for x in res2.values}
     assert v2 == {("Visible", "B2"), ("Visible", "C2")}
     assert any(w.code == "hidden_excluded" for w in res2.warnings)

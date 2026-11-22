@@ -1327,19 +1327,25 @@ def _separate_caption(item: _TextItem, items: list[_TextItem]) -> str:
     width = item.shape.width or 0
     if not width or item.shape.rotation:
         return ""
-    captions = []
+    above, below = [], []
     for peer in items:
         if (peer is item or peer.kind == "footnote" or peer.ph_type in _TITLE_PLACEHOLDERS
                 or peer.shape._element.getparent() is not parent or peer.shape.rotation):
             continue
         peer_width = peer.shape.width or 0
-        gap = peer.top - item.bottom
         overlap = min(item.left + width, peer.left + peer_width) - max(item.left, peer.left)
-        if (0 <= gap <= 91440 and width * .7 <= peer_width <= width * 1.5
-                and overlap >= .8 * min(width, peer_width)):
-            caption = _caption_text(peer.text)
-            if caption:
-                captions.append(caption)
+        if not (width * .7 <= peer_width <= width * 1.5 and overlap >= .8 * min(width, peer_width)):
+            continue
+        if 0 <= peer.top - item.bottom <= 91440:
+            candidates = below
+        elif 0 <= item.top - peer.bottom <= 91440:
+            candidates = above
+        else:
+            continue
+        caption = _caption_text(peer.text)
+        if caption:
+            candidates.append(caption)
+    captions = below or above
     return captions[0] if len(captions) == 1 else ""
 
 

@@ -26,6 +26,7 @@ from functools import lru_cache
 from typing import Any
 
 import openpyxl
+from lxml import etree
 from openpyxl.utils import get_column_letter, range_boundaries
 
 from numcheck.config import Config
@@ -74,8 +75,7 @@ def extract_model_full(path: str, config: Config | None = None) -> ModelExtracti
         if streaming:
             result.warnings.append(ReviewWarning(
                 code="large_workbook_streaming",
-                message=(f"{name} is very large; it was read in streaming mode, so merged-cell labels and "
-                         "hidden rows/columns are unavailable. Labels near merged headers may be missing."),
+                message=f"{name} was read in streaming mode to reduce memory use.",
                 file=name))
         ext_links = getattr(wb_f, "_external_links", None) or getattr(wb_v, "_external_links", None)
         if ext_links:
@@ -195,13 +195,39 @@ def _build_grid(ws_v, ws_f, streaming: bool) -> SheetGrid:
                 fmt = getattr(cell, "number_format", "General")
                 if fmt and fmt != "General":
                     g.fmts[key] = fmt
-    if not streaming:
+    if streaming:
+        _read_streaming_structure(ws_v, g)
+    else:
         _read_structure(ws_v, g)
     return g
 
 
+def _read_streaming_structure(ws, g: SheetGrid) -> None:
+    """Read worksheet metadata omitted by openpyxl's read-only cell iterator."""
+    main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    tags = tuple(main + name for name in ("row", "col", "mergeCell"))
+    with ws._get_source() as stream:
+        for _, element in etree.iterparse(stream, events=("end",), tag=tags, no_network=True, resolve_entities=False):
+            if element.tag == main + "mergeCell" and element.get("ref"):
+                left, top, right, bottom = range_boundaries(element.get("ref"))
+                if None not in (left, top, right, bottom):
+                    g.merged.append((top, left, bottom, right))
+            elif element.get("hidden") in ("1", "true"):
+                if element.tag == main + "row" and element.get("r", "").isdigit():
+                    g.hidden_rows.add(int(element.get("r")))
+                elif element.tag == main + "col":
+                    lo, hi = element.get("min", "0"), element.get("max", "0")
+                    if lo.isdigit() and hi.isdigit() and 1 <= int(lo) <= int(hi) <= 16_384:
+                        g.hidden_cols.update(range(int(lo), int(hi) + 1))
+            parent = element.getparent()
+            element.clear()
+            if parent is not None:
+                while element.getprevious() is not None:
+                    del parent[0]
+
+
 def _read_structure(ws, g: SheetGrid) -> None:
-    """Merged ranges and hidden rows/columns (unavailable when streaming)."""
+    """Read merged ranges and hidden rows/columns from an in-memory sheet."""
     try:
         for rng in ws.merged_cells.ranges:
             g.merged.append((rng.min_row, rng.min_col, rng.max_row, rng.max_col))
