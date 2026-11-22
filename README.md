@@ -117,8 +117,8 @@ always runs both steps, starting with local source search.
 
 A figure moves to Verified only when its source is distinct, its workbook label
 and period support the match, and the value reconciles at the slide's displayed
-precision. Inspect lists reconciling candidates when the source is still
-uncertain. AI receives labels only for eligible reconciling cells. Coverage and
+precision. Inspect also lists related workbook cells and shows how their values
+compare with the slide. AI receives labels only for eligible reconciling cells. Coverage and
 report downloads update when a source is verified.
 
 Select a provider, enter its model ID and API key if

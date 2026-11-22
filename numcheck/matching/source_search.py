@@ -146,8 +146,52 @@ def _reconciling_sources(deck, index, ranked, precise):
     return [(index.values[-i], index.periods[-i]) for _, _, _, i in heapq.nlargest(MAX_CANDIDATES, candidates)]
 
 
-def possible_sources(deck: DeckNumber, index: ModelIndex) -> list[tuple[ModelValue, str]]:
-    return _reconciling_sources(deck, index, _rank_sources(deck, index), display_precision(index.config))
+def _inspection_sources(deck, index, precise, reconciling):
+    """Keep related cells visible when the displayed value or context is incomplete."""
+    text = _source_label(deck)
+    label = index.parts(text)
+    query = index.query(label.tokens)
+    deck_period = deck.period or label.period
+    qualifiers = (label.qualifiers | normalize_qualifiers(deck.qualifiers, index.config)) - {"change"}
+    change = _is_change(deck, text)
+    positions = {i for token in label.tokens for i in index.postings.get(token, ())}
+    options = {value.ref: (value, period) for value, period in reconciling}
+    ranked = []
+    for i in positions:
+        value, period = index.values[i], index.periods[i]
+        if (value.ref in options or value.is_error
+                or not dimensions_compatible(deck.unit, value.unit)
+                or (deck.currency and value.currency and deck.currency != value.currency)
+                or not (value.row_label or value.named_range or value.col_label)):
+            continue
+        affinity = period_affinity(deck_period, period)
+        if affinity == 0:
+            continue
+        base, _ = index.label_score(query, i)
+        alignment = qualifier_factor(qualifiers, index.quals[i] - {"change"})
+        if alignment <= 0.3:
+            continue
+        score = base * alignment * (affinity if affinity is not None else 0.8)
+        if score >= 0.16:
+            consistent = index.is_change(i) == change
+            ranked.append((score * (1 if consistent else 0.65), not value.hidden, value.sheet_priority or 0, -i))
+    # Check the best label leads first. Broader value coincidences cannot displace them.
+    leads = []
+    for score, visible, priority, pos in heapq.nlargest(MAX_CANDIDATES * 3, ranked):
+        value = index.values[-pos]
+        comparison = source_comparison(deck, value, precise)
+        tier = 2 if comparison and comparison.ok and not comparison.inferred else int(bool(comparison and comparison.ok))
+        leads.append((tier, score, visible, priority, pos))
+    for _, _, _, _, pos in heapq.nlargest(MAX_CANDIDATES - len(options), leads):
+        value = index.values[-pos]
+        options[value.ref] = value, index.periods[-pos]
+    return list(options.values())
+
+
+def discover_sources(deck: DeckNumber, index: ModelIndex):
+    precise = display_precision(index.config)
+    reconciling = _reconciling_sources(deck, index, _rank_sources(deck, index), precise)
+    return _inspection_sources(deck, index, precise, reconciling), ai_candidates(deck, reconciling, index.config)
 
 
 def ai_candidates(deck, candidates, config):
@@ -260,21 +304,23 @@ def review_sources(matches, index, config, warnings, ai_config=None):
         if rank is None:
             rank = rankings[key] = _rank_sources(deck, index)
         ranked = heapq.nlargest(2, rank)
-        options = _reconciling_sources(deck, index, rank, precise)
-        refs = {value.ref for value, _ in options}
-        updated = replace(match, source_options=options,
+        reconciling = _reconciling_sources(deck, index, rank, precise)
+        eligible = ai_candidates(deck, reconciling, config) if reconciling else []
+        refs = {value.ref for value, _ in eligible}
+        updated = replace(match, source_options=reconciling, source_ai_options=eligible,
                           source_suggestion=match.source_suggestion if match.source_suggestion in refs else "")
         truncated = len(rank) > MAX_CANDIDATES
         results[pos] = _verified_source(updated, index, ranked, truncated, precise, "")
-        if options and results[pos].status in UNRESOLVED:
-            pending[str(pos)] = (ranked, truncated)
+        if results[pos].status in UNRESOLVED:
+            results[pos].source_options = _inspection_sources(deck, index, precise, reconciling)
+            if eligible:
+                pending[str(pos)] = (ranked, truncated)
     suggestions = {}
     ai_targets = []
     if ai_config is not None:
         ai_targets = [(key, results[int(key)].deck,
-                       ai_candidates(results[int(key)].deck, results[int(key)].source_options, config))
+                       results[int(key)].source_ai_options)
                       for key in pending]
-        ai_targets = [target for target in ai_targets if target[2]]
     if ai_targets:
         suggestions = suggest_sources(
             ai_targets, ai_config, warnings,

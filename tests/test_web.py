@@ -488,7 +488,12 @@ def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monk
         range_row = next(m for m in result["matches"] if m["raw_text"] == "8.5%" and m["slide_number"] == 9)
         assert range_row["status"] == "unmatched" and not range_row["source_suggestion"]
         inspected = client.get(base + "/evidence/workbook", query_string={"figure": range_row["deck_uid"]}).get_json()
-        assert not inspected["sources"] and "displayed precision" in inspected["message"]
+        assert len(inspected["sources"]) == 4 and not inspected["ai_eligible"]
+        assert all(cell["display_value"] and cell["comparison"] for cell in inspected["sources"])
+        differing = next(cell for cell in inspected["sources"] if cell["comparison"] == "differs")
+        selected = client.get(base + "/evidence/workbook", query_string={
+            "figure": range_row["deck_uid"], "cell": differing["ref"]}).get_json()
+        assert selected["rows"] and "differs from the slide" in selected["candidate_check"]
         exported = client.get(base + "/download/report.json")
         assert exported.get_json()["coverage"] == result["coverage"]
         assert exported.get_json()["issues"] == result["issues"]

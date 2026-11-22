@@ -36,9 +36,9 @@ from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
 from numcheck.llm.factory import PROVIDERS, default_model, resolve_ambiguous
 from numcheck.matching.index import ModelIndex
 from numcheck.matching.source_search import (
-    UNRESOLVED, ai_candidates, display_precision, possible_sources, source_comparison, suggest_sources,
+    UNRESOLVED, discover_sources, display_precision, source_comparison, suggest_sources,
 )
-from numcheck.models import ModelValue, NumCheckInputError, ReviewResult, ReviewWarning
+from numcheck.models import ModelValue, NumCheckInputError, ReviewResult, ReviewWarning, format_model_value
 from numcheck.report import MATCH_ROW_CAP, result_to_dict
 from numcheck.web.evidence import PreviewUnavailable, slide_preview, workbook_preview
 
@@ -101,7 +101,8 @@ class Job:
     future: Future | None = None
     cfg: Config | None = None
     source_index: ModelIndex | None = field(default=None, repr=False)
-    source_options: dict[str, list[tuple[ModelValue, str]]] = field(default_factory=dict, repr=False)
+    source_options: dict[str, tuple[list[tuple[ModelValue, str]], list[tuple[ModelValue, str]]]] = field(
+        default_factory=dict, repr=False)
     source_lock: Any = field(default_factory=threading.Lock, repr=False)
     source_review: dict[str, Any] = field(default_factory=dict)
     next_issue_id: int = 1
@@ -783,15 +784,16 @@ def create_app(config_path: str | None = None) -> Flask:
             raise RequestError("Source discovery is available for unresolved figures.", 422)
         index = mgr.source_index(job) if match.source_options is None else None
         with job.source_lock:
-            candidates = match.source_options
-            if candidates is None:
-                candidates = job.source_options.get(match.deck.uid)
-            if candidates is None and index is not None:
-                candidates = possible_sources(match.deck, index)
-                job.source_options[match.deck.uid] = candidates
+            if match.source_options is not None:
+                candidates, eligible = match.source_options, match.source_ai_options
+            else:
+                cached = job.source_options.get(match.deck.uid)
+                if cached is None:
+                    cached = discover_sources(match.deck, index)
+                    job.source_options[match.deck.uid] = cached
+                candidates, eligible = cached
         recommendation = ""
         message = ""
-        eligible = ai_candidates(match.deck, candidates, job.cfg or Config())
         if eligible and request.form.get("llm", "off") != "off":
             ai_cfg = _load_cfg(config_path)
             apply_provider_overrides(ai_cfg, request.form, local_connection())
@@ -808,30 +810,43 @@ def create_app(config_path: str | None = None) -> Flask:
         source = ((issue.source_cell if issue is not None else "")
                   or (match.model.ref if match is not None and match.model else ""))
         options = []
-        discovered, cached = [], None
+        discovered, eligible, cached = [], [], None
         unresolved = match is not None and match.status in UNRESOLVED
         cfg = job.cfg or Config()
         if match is not None:
-            cached = match.source_options if match.source_options is not None else job.source_options.get(match.deck.uid)
+            if match.source_options is not None:
+                cached, eligible = match.source_options, match.source_ai_options
+            else:
+                cached, eligible = job.source_options.get(match.deck.uid, (None, []))
             discovered = [value for value, _ in cached or ()]
             if unresolved and cached is not None:
                 options = discovered
-                source = match.source_suggestion or (options[0].ref if len(options) == 1 else "")
+                preferred = eligible[0][0].ref if len(eligible) == 1 else ""
+                source = match.source_suggestion or preferred or (options[0].ref if len(options) == 1 else "")
             else:
                 prior_candidates = [value for value in match.candidates if unresolved or value.ref == source]
                 options = list({m.ref: m for m in [match.model, *prior_candidates, match.old_model]
                                 if m is not None}.values())
-                if unresolved:
-                    precise = display_precision(cfg)
-                    options = [value for value in options
-                               if (comparison := source_comparison(match.deck, value, precise)) and comparison.ok]
         selection = request.args.get("cell")
         selected = next((m for m in options if m.ref == (selection or source)), None)
         workbooks = {path.name: (slot, path, name) for slot, path, name in originals(job) if slot != "deck"}
         discovered_refs = {value.ref for value in discovered}
+        comparisons = {}
+        if unresolved:
+            precise = display_precision(cfg)
+            comparisons = {value.ref: source_comparison(match.deck, value, precise) for value in options}
+
+        def comparison_status(value):
+            comparison = comparisons.get(value.ref)
+            if comparison is None:
+                return "unknown"
+            if not comparison.ok:
+                return "differs"
+            return "inferred" if comparison.inferred else "reconciles"
+
         result = {"can_discover": unresolved,
                   "source_search_done": cached is not None,
-                  "ai_eligible": unresolved and bool(ai_candidates(match.deck, cached or [], cfg)),
+                  "ai_eligible": unresolved and bool(eligible),
                   "source_suggestion": match.source_suggestion if match is not None else "",
                   "possible_count": len(discovered_refs),
                   "sources": [
@@ -839,15 +854,17 @@ def create_app(config_path: str | None = None) -> Flask:
              if m.workbook in workbooks else m.ref,
              "prior": m is match.old_model, "selected": m is selected,
              "possible": m.ref in discovered_refs,
+             "comparison": comparison_status(m) if unresolved else "",
+             "display_value": format_model_value(m) if unresolved else "",
              "metric": " · ".join(filter(None, (m.row_label, m.col_label)))} for m in options
         ]}
         if selected is None:
             if len(options) > 1:
-                result["message"] = "Several cells reconcile. Choose one to inspect its label and period."
+                result["message"] = "Choose a cell to inspect its label, period, and value."
             elif options:
                 result["message"] = "Choose the candidate cell to inspect its label and period."
             elif unresolved and cached is not None:
-                result["message"] = "No eligible Excel cell matches the figure at the slide’s displayed precision."
+                result["message"] = "No plausible workbook cells were found for this figure."
             else:
                 result["message"] = "This finding has no linked workbook cell."
             return jsonify(result)
@@ -857,11 +874,12 @@ def create_app(config_path: str | None = None) -> Flask:
             return jsonify(result)
         slot, path, name = workbook
         if unresolved:
-            comparison = source_comparison(match.deck, selected, display_precision(cfg))
-            result["candidate_check"] = (
-                "Value reconciles with inferred units or scale. The source remains unverified."
-                if comparison and comparison.ok and comparison.inferred else
-                "Value reconciles at displayed precision. The source remains unverified.")
+            result["candidate_check"] = {
+                "reconciles": "Value reconciles at displayed precision. The source remains unverified.",
+                "inferred": "Value reconciles with inferred units or scale. The source remains unverified.",
+                "differs": "The saved Excel value differs from the slide at displayed precision.",
+                "unknown": "The saved Excel value could not be compared to the slide figure.",
+            }[comparison_status(selected)]
         result.update({"file": name, "slot": slot, "download": f"/api/jobs/{job.id}/original/{slot}"})
         try:
             result.update(workbook_preview(path, selected, top=request.args.get("row", type=int),

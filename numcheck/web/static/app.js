@@ -558,7 +558,7 @@
     $("runAISourceReview").disabled = S.sourceBusy || !remaining;
     $("newReviewBtn").disabled = S.sourceBusy;
     var counts = summary.searched === undefined ? "" :
-      "Searched " + summary.searched + " · " + summary.with_candidates + " with matching values · " +
+      "Searched " + summary.searched + " · " + summary.with_candidates + " with possible sources · " +
       summary.verified + " newly verified" +
       (summary.ai_requested ? (summary.ai_reviewed ? " · AI checked " + summary.ai_reviewed :
         " · No remaining cells eligible for AI") : "") +
@@ -986,7 +986,7 @@
     if (match.source_suggestion) return el("span", { class: "note source-candidate",
       title: match.source_suggestion, text: "AI suggests " + match.source_suggestion.replace(/^\[[^\]]*\]\s*/, "") });
     return match.possible_source_count ? el("span", { class: "note source-candidate",
-      text: plural(match.possible_source_count, "reconciling cell") }) : null;
+      text: plural(match.possible_source_count, "possible source") }) : null;
   }
 
   // -------------------------------------------------------------- source preview
@@ -1011,11 +1011,14 @@
       var label = el("label", { class: "evidence-picker", text: "Source cell" });
       var select = el("select", { on: { change: function () { if (select.value) loadCell(select.value); } } });
       select.appendChild(el("option", { value: "", text: "Choose a source", disabled: true }));
+      var statusLabels = { reconciles: "Value reconciles", inferred: "Matches with inferred units",
+        differs: "Value differs", unknown: "Value unconfirmed" };
       data.sources.forEach(function (source) {
         select.appendChild(el("option", { value: source.ref,
           text: (source.prior ? "Prior model · " : source.ref === data.source_suggestion ? "AI suggestion · " :
-            (data.can_discover ? "Value reconciles · " : "")) +
-            (source.label || source.ref) + (source.possible && source.metric ? " · " + source.metric : "") }));
+            (source.comparison ? statusLabels[source.comparison] + " · " : "")) +
+            (source.label || source.ref) + (source.display_value ? " · " + source.display_value : "") +
+            (source.possible && source.metric ? " · " + source.metric : "") }));
       });
       select.value = selected ? selected.ref : "";
       label.appendChild(select);
@@ -1131,8 +1134,8 @@
         if (run !== previewSequence) return;
         ask.hidden = !aiConfigured || !result.ai_eligible;
         discovery.textContent = result.message || (result.recommended ? "AI suggested a source. Inspect the cell before confirming." :
-          (result.count ? "Found " + plural(result.count, "cell") + " that reconcile at displayed precision." :
-            "No eligible cell matches this figure at displayed precision."));
+          (result.count ? "Found " + plural(result.count, "possible source") + ". Check the value and label." :
+            "No plausible workbook cells were found."));
         loadCell(result.recommended);
       } catch (err) {
         if (run === previewSequence) discovery.textContent = err.message;
@@ -1175,8 +1178,8 @@
             find.hidden = true;
             ask.hidden = !aiConfigured || !data.ai_eligible;
             discovery.textContent = data.source_suggestion ? "AI suggested this source. Inspect the workbook evidence to confirm it."
-              : data.possible_count ? "Found " + plural(data.possible_count, "cell") + " that reconcile at displayed precision."
-                : "No eligible Excel cell matches at displayed precision.";
+              : data.possible_count ? "Found " + plural(data.possible_count, "possible source") + ". Check the value and label."
+                : "No plausible workbook cells were found.";
           }
           paintWorkbook(workbook, data, loadCell, issueId);
           if (focused) {

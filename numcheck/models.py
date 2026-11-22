@@ -210,6 +210,7 @@ class Match:
     old_model: ModelValue | None = None   # staleness: corresponding cell in previous model
     note: str = ""
     source_options: list[tuple[ModelValue, str]] | None = field(default=None, repr=False)
+    source_ai_options: list[tuple[ModelValue, str]] = field(default_factory=list, repr=False)
     source_suggestion: str = ""
 
 
