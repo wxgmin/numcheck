@@ -112,13 +112,14 @@ the exported reports.
 NumCheck searches the current workbooks locally for all unresolved figures by
 default. Change **Search for possible sources automatically** in Review settings
 or run **Find possible sources for all** from the results. **Ask AI for sources**
-compares candidate labels across the review. Enable **Use AI during reviews**
-to run that step automatically with your selected provider.
+compares candidate labels across the review. Enabling **Use AI during reviews**
+always runs both steps, starting with local source search.
 
 A figure moves to Verified only when its source is distinct, its workbook label
 and period support the match, and the value reconciles at the slide's displayed
-precision. Other suggestions remain available in Inspect. Coverage and report
-downloads update when a source is verified.
+precision. Inspect lists reconciling candidates when the source is still
+uncertain. AI receives labels only for eligible reconciling cells. Coverage and
+report downloads update when a source is verified.
 
 Select a provider, enter its model ID and API key if
 needed, then use **Check connection**. The check sends a synthetic label pair

@@ -206,7 +206,11 @@
   function paintAIReviewStatus() {
     var picker = $("set-llm"), status = $("ai-review-status");
     var provider = picker.value || "off";
-    if (!$("llm-auto").checked) {
+    var automatic = $("llm-auto").checked;
+    $("source-search-auto").disabled = automatic;
+    $("source-search-note").textContent = automatic ? "Local source search runs first whenever AI is enabled." :
+      "Searches the current Excel files locally for every unresolved figure.";
+    if (!automatic) {
       status.textContent = S.chatGPTConnected && (provider === "off" || provider === "chatgpt")
         ? "Off for this review. ChatGPT is connected." : "Off for this review.";
     } else if (provider === "off") {
@@ -215,7 +219,7 @@
       status.textContent = S.chatGPTConnected
         ? "Choose a ChatGPT model when the list is ready." : "Connect ChatGPT to use it in this review.";
     } else {
-      status.textContent = "On for this review with " + picker.selectedOptions[0].text + ".";
+      status.textContent = "On with " + picker.selectedOptions[0].text + ". NumCheck searches Excel before asking AI.";
     }
   }
 
@@ -363,11 +367,8 @@
   function clearFormError() { $("formError").hidden = true; }
 
   // ------------------------------------------------------------------- submit
-  function buildForm() {
+  function buildReviewOptions() {
     var fd = new FormData();
-    fd.append("deck", S.files.deck[0].file, S.files.deck[0].file.name);
-    S.files.models.forEach(function (e) { fd.append("models", e.file, e.file.name); });
-    if (S.files.old.length) fd.append("model_old", S.files.old[0].file, S.files.old[0].file.name);
     if ($("llm-auto").checked) appendProviderSettings(fd);
     else fd.append("llm", "off");
     fd.append("rounding_mode", $("set-rounding").value);
@@ -377,14 +378,16 @@
     fd.append("require_label_evidence", String($("set-require-label").checked));
     fd.append("annotate", $("set-annotate").checked ? "true" : "false");
     fd.append("ocr", $("set-ocr").checked && !$("set-ocr").disabled ? "true" : "false");
-    fd.append("source_search", String($("source-search-auto").checked));
+    fd.append("source_search", String($("llm-auto").checked || $("source-search-auto").checked));
     return fd;
   }
-  function preflight() {
-    if (!S.files.deck.length) return ["A deck is required.", "Add a .pptx file to the Deck slot."];
-    if (!S.files.models.length) return ["At least one model is required.", "Add an .xlsx file to the Models slot."];
-    var bad = [].concat(S.files.deck, S.files.models, S.files.old).filter(function (e) { return e.error; })[0];
-    if (bad) return [bad.file.name + ": " + bad.error + ".", "Remove the file or replace it."];
+  function preflight(demo) {
+    if (!demo) {
+      if (!S.files.deck.length) return ["A deck is required.", "Add a .pptx file to the Deck slot."];
+      if (!S.files.models.length) return ["At least one model is required.", "Add an .xlsx file to the Models slot."];
+      var bad = [].concat(S.files.deck, S.files.models, S.files.old).find(function (e) { return e.error; });
+      if (bad) return [bad.file.name + ": " + bad.error + ".", "Remove the file or replace it."];
+    }
     if ($("llm-auto").checked && (!$("set-llm").value || $("set-llm").value === "off")) {
       $("ai-settings").open = true;
       return ["Choose an AI provider.", "Open AI provider settings or turn off AI for this review."];
@@ -399,14 +402,22 @@
   }
   function onSubmit(ev) {
     ev.preventDefault();
-    if (S.running) return;
-    var bad = preflight();
-    if (bad) { showFormError(bad[0], bad[1]); $("formError").focus(); return; }
-    startJob(function () { return api("POST", "/api/jobs", buildForm()); });
+    submitReview(false);
   }
   function onDemo() {
+    submitReview(true);
+  }
+  function submitReview(demo) {
     if (S.running) return;
-    startJob(function () { return api("POST", "/api/demo"); }, true);
+    var bad = preflight(demo);
+    if (bad) { showFormError(bad[0], bad[1]); $("formError").focus(); return; }
+    var form = buildReviewOptions();
+    if (!demo) {
+      form.append("deck", S.files.deck[0].file, S.files.deck[0].file.name);
+      S.files.models.forEach(function (e) { form.append("models", e.file, e.file.name); });
+      if (S.files.old.length) form.append("model_old", S.files.old[0].file, S.files.old[0].file.name);
+    }
+    startJob(function () { return api("POST", demo ? "/api/demo" : "/api/jobs", form); }, demo);
   }
 
   function startJob(post, demo) {
@@ -547,8 +558,11 @@
     $("runAISourceReview").disabled = S.sourceBusy || !remaining;
     $("newReviewBtn").disabled = S.sourceBusy;
     var counts = summary.searched === undefined ? "" :
-      "Searched " + summary.searched + " · " + summary.with_candidates + " with candidates · " +
-      summary.verified + " newly verified · " + summary.suggested + " AI suggestions. ";
+      "Searched " + summary.searched + " · " + summary.with_candidates + " with matching values · " +
+      summary.verified + " newly verified" +
+      (summary.ai_requested ? (summary.ai_reviewed ? " · AI checked " + summary.ai_reviewed :
+        " · No remaining cells eligible for AI") : "") +
+      (summary.suggested ? " · " + plural(summary.suggested, "AI suggestion") : "") + ". ";
     $("sourceReviewStatus").textContent = message || (counts + plural(remaining, "unresolved figure") + ".");
   }
 
@@ -972,7 +986,7 @@
     if (match.source_suggestion) return el("span", { class: "note source-candidate",
       title: match.source_suggestion, text: "AI suggests " + match.source_suggestion.replace(/^\[[^\]]*\]\s*/, "") });
     return match.possible_source_count ? el("span", { class: "note source-candidate",
-      text: plural(match.possible_source_count, "possible source") }) : null;
+      text: plural(match.possible_source_count, "reconciling cell") }) : null;
   }
 
   // -------------------------------------------------------------- source preview
@@ -1000,7 +1014,7 @@
       data.sources.forEach(function (source) {
         select.appendChild(el("option", { value: source.ref,
           text: (source.prior ? "Prior model · " : source.ref === data.source_suggestion ? "AI suggestion · " :
-            (source.possible && data.can_discover ? "Possible source · " : "")) +
+            (data.can_discover ? "Value reconciles · " : "")) +
             (source.label || source.ref) + (source.possible && source.metric ? " · " + source.metric : "") }));
       });
       select.value = selected ? selected.ref : "";
@@ -1115,10 +1129,10 @@
       try {
         var result = await api("POST", base + "sources?" + query, form);
         if (run !== previewSequence) return;
-        ask.hidden = !aiConfigured || !result.count;
+        ask.hidden = !aiConfigured || !result.ai_eligible;
         discovery.textContent = result.message || (result.recommended ? "AI suggested a source. Inspect the cell before confirming." :
-          (result.count ? "Found " + plural(result.count, "possible source") + ". Choose one to inspect." :
-            "No additional sources found with compatible labels, units and periods."));
+          (result.count ? "Found " + plural(result.count, "cell") + " that reconcile at displayed precision." :
+            "No eligible cell matches this figure at displayed precision."));
         loadCell(result.recommended);
       } catch (err) {
         if (run === previewSequence) discovery.textContent = err.message;
@@ -1159,10 +1173,10 @@
           tools.hidden = !data.can_discover;
           if (data.can_discover && data.source_search_done && !discovery.textContent) {
             find.hidden = true;
-            ask.hidden = !aiConfigured || !data.possible_count;
+            ask.hidden = !aiConfigured || !data.ai_eligible;
             discovery.textContent = data.source_suggestion ? "AI suggested this source. Inspect the workbook evidence to confirm it."
-              : data.possible_count ? "Found " + plural(data.possible_count, "possible source") + "."
-                : "No additional compatible sources were found.";
+              : data.possible_count ? "Found " + plural(data.possible_count, "cell") + " that reconcile at displayed precision."
+                : "No eligible Excel cell matches at displayed precision.";
           }
           paintWorkbook(workbook, data, loadCell, issueId);
           if (focused) {

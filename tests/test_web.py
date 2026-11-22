@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 from pptx import Presentation
+from pptx.util import Inches
 
 from numcheck.demo import ASSET_DIR, DEMO_FILES
 from numcheck.models import NumCheckInputError
@@ -483,24 +484,64 @@ def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monk
         assert evidence["address"] == "F15"
 
         result = run({"llm": "ollama"})
-        assert len(calls) == 1 and len(calls[0]) > 1
-        assert result["source_review"]["suggested"] > 0
+        assert not calls and result["source_review"]["ai_reviewed"] == 0
         range_row = next(m for m in result["matches"] if m["raw_text"] == "8.5%" and m["slide_number"] == 9)
-        assert range_row["status"] == "unmatched" and range_row["source_suggestion"]
+        assert range_row["status"] == "unmatched" and not range_row["source_suggestion"]
         inspected = client.get(base + "/evidence/workbook", query_string={"figure": range_row["deck_uid"]}).get_json()
-        assert inspected["source_suggestion"] == range_row["source_suggestion"]
+        assert not inspected["sources"] and "displayed precision" in inspected["message"]
         exported = client.get(base + "/download/report.json")
         assert exported.get_json()["coverage"] == result["coverage"]
         assert exported.get_json()["issues"] == result["issues"]
         exported.close()
 
-        deck, model = (ASSET_DIR / DEMO_FILES[key][0] for key in ("deck", "model"))
-        automatic = _post(client, (deck, model), source_search="true", llm="ollama", annotate="false")
-        auto_job = automatic.get_json()["job_id"]
-        assert _wait(client, auto_job)["status"] == "done"
-        auto_result = client.get(f"/api/jobs/{auto_job}/result").get_json()
-        assert len(calls) == 2 and len(calls[1]) > 1
-        assert auto_result["source_review"]["verified"] >= 1
+
+def test_ai_automatically_searches_and_checks_reconciling_sources_for_upload_and_demo(tmp_path, monkeypatch):
+    deck, model = tmp_path / "deck.pptx", tmp_path / "model.xlsx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    for row, (metric, amount) in enumerate((("Revenue", 100), ("Gross Profit", 60)), start=1):
+        shape = slide.shapes.add_textbox(Inches(1), Inches(row), Inches(8), Inches(1))
+        shape.text = f"Aerospace Components FY24 {metric}: ${amount}.0m"
+    presentation.save(deck)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Aerospace Components"
+    sheet.append(["Metric", "FY24", "FY25"])
+    sheet.append(["Revenue", 100_000_000, 100_000_000])
+    sheet.append(["Gross Profit", 60_000_000, 900_000_000])
+    other = workbook.create_sheet("Other Segments")
+    other.append(["Metric", "FY24"])
+    other.append(["Revenue", 200_000_000])
+    other.append(["Subscription Gross Profit", 60_000_000])
+    workbook.save(model)
+    config = tmp_path / "numcheck.toml"
+    config.write_text("[matching]\nmin_label_score = 0.99\n", encoding="utf-8")
+    monkeypatch.setattr("numcheck.web.app.build_demo",
+                        lambda _: {"deck": str(deck), "model": str(model), "model_old": str(model)})
+    calls = []
+
+    def rank(entries, config, warnings):
+        calls.append(entries)
+        assert len(entries) == 2
+        assert all(len(entry["candidates"]) == 1 for entry in entries)
+        assert {entry["candidates"][0]["row_label"] for entry in entries} == {"Revenue", "Gross Profit"}
+        assert all(entry["candidates"][0]["col_label"] == "FY24" for entry in entries)
+        assert "$100.0m" not in str(entries) and "$60.0m" not in str(entries)
+        return {entry["id"]: "candidate-1" for entry in entries}
+
+    monkeypatch.setattr("numcheck.matching.source_search.resolve_ambiguous", rank)
+    form = {"source_search": "false", "llm": "ollama", "annotate": "false", "require_label_evidence": "true"}
+    with create_app(str(config)).test_client() as client:
+        for started in (_post(client, (deck, model), **form), client.post("/api/demo", headers=HDR, data=form)):
+            assert started.status_code == 202
+            job = started.get_json()["job_id"]
+            assert _wait(client, job)["status"] == "done"
+            result = client.get(f"/api/jobs/{job}/result").get_json()
+            assert result["settings"]["source_search"] is True
+            assert result["source_review"]["ai_reviewed"] == result["source_review"]["verified"] == 2
+            assert {row["source_cell"].split("] ")[-1] for row in result["matches"]} == {
+                "Aerospace Components!B2", "Aerospace Components!B3"}
+        assert len(calls) == 2
 
 
 def test_security_headers(client):

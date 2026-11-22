@@ -138,7 +138,8 @@ def run_review(
 
     source_summary = {}
     if source_index is not None:
-        report("match", 0.65, "Checking possible workbook sources")
+        report("match", 0.65, "Searching Excel, then checking reconciled candidates with AI"
+               if config.llm != "off" else "Checking possible workbook sources")
         matches, source_summary = review_sources(matches, source_index, config, warnings,
                                                  config if config.llm != "off" else None)
 

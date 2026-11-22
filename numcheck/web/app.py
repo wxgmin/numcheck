@@ -35,8 +35,9 @@ from numcheck.llm.chatgpt import ChatGPTConnection
 from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
 from numcheck.llm.factory import PROVIDERS, default_model, resolve_ambiguous
 from numcheck.matching.index import ModelIndex
-from numcheck.matching.normalizer import compare
-from numcheck.matching.source_search import UNRESOLVED, possible_sources, suggest_sources
+from numcheck.matching.source_search import (
+    UNRESOLVED, ai_candidates, display_precision, possible_sources, source_comparison, suggest_sources,
+)
 from numcheck.models import ModelValue, NumCheckInputError, ReviewResult, ReviewWarning
 from numcheck.report import MATCH_ROW_CAP, result_to_dict
 from numcheck.web.evidence import PreviewUnavailable, slide_preview, workbook_preview
@@ -396,7 +397,7 @@ def apply_form_overrides(cfg: Config, form, chatgpt: ChatGPTConnection | None = 
     cfg.require_label_evidence = _truthy(form.get("require_label_evidence"), cfg.require_label_evidence)
     return {"llm": llm, "tolerance": tol, "rounding_mode": mode, "base_period": base,
             "annotate": annotate, "ocr": ocr, "require_label_evidence": cfg.require_label_evidence,
-            "source_search": _truthy(form.get("source_search"), False),
+            "source_search": llm != "off" or _truthy(form.get("source_search"), False),
             "llm_model": default_model(llm, cfg)}
 
 
@@ -426,10 +427,9 @@ def create_job_from_request(mgr: JobManager, config_path: str | None, demo: bool
     job_id, job_dir = mgr.new_dir()
     try:
         if demo:
-            settings = {"llm": "off", "tolerance": cfg.relative_tolerance, "rounding_mode": cfg.rounding_mode,
-                        "base_period": cfg.base_period, "annotate": True, "ocr": False, "require_label_evidence": True}
             cfg.require_label_evidence = True
             cfg.llm, cfg.ocr = "off", False
+            settings = apply_form_overrides(cfg, request.form, chatgpt)
             job = Job(job_id, job_dir, settings, {}, {}, demo=True, cfg=cfg)
         else:
             settings = apply_form_overrides(cfg, request.form, chatgpt)
@@ -661,7 +661,7 @@ def create_app(config_path: str | None = None) -> Flask:
 
     @app.post("/api/demo")
     def create_demo():
-        job = create_job_from_request(mgr, config_path, demo=True)
+        job = create_job_from_request(mgr, config_path, demo=True, chatgpt=local_connection())
         mgr.submit(job)
         return jsonify({"job_id": job.id}), 202
 
@@ -791,13 +791,15 @@ def create_app(config_path: str | None = None) -> Flask:
                 job.source_options[match.deck.uid] = candidates
         recommendation = ""
         message = ""
-        if candidates and request.form.get("llm", "off") != "off":
+        eligible = ai_candidates(match.deck, candidates, job.cfg or Config())
+        if eligible and request.form.get("llm", "off") != "off":
             ai_cfg = _load_cfg(config_path)
             apply_provider_overrides(ai_cfg, request.form, local_connection())
             warnings: list[ReviewWarning] = []
-            recommendation = suggest_sources([("0", match.deck, candidates)], ai_cfg, warnings).get("0", "")
+            recommendation = suggest_sources([("0", match.deck, eligible)], ai_cfg, warnings).get("0", "")
             message = warnings[0].message if warnings else ("" if recommendation else "AI did not select a source.")
-        return jsonify({"count": len(candidates), "recommended": recommendation, "message": message})
+        return jsonify({"count": len(candidates), "ai_eligible": bool(eligible),
+                        "recommended": recommendation, "message": message})
 
     @app.get("/api/jobs/<job_id>/evidence/workbook")
     def evidence_workbook(job_id: str):
@@ -806,19 +808,30 @@ def create_app(config_path: str | None = None) -> Flask:
         source = ((issue.source_cell if issue is not None else "")
                   or (match.model.ref if match is not None and match.model else ""))
         options = []
+        discovered, cached = [], None
+        unresolved = match is not None and match.status in UNRESOLVED
+        cfg = job.cfg or Config()
         if match is not None:
             cached = match.source_options if match.source_options is not None else job.source_options.get(match.deck.uid)
             discovered = [value for value, _ in cached or ()]
-            options = list({m.ref: m for m in [match.model, *match.candidates, match.old_model, *discovered]
-                            if m is not None}.values())
-            if match.status in UNRESOLVED:
-                source = match.source_suggestion or source or (discovered[0].ref if discovered else "")
+            if unresolved and cached is not None:
+                options = discovered
+                source = match.source_suggestion or (options[0].ref if len(options) == 1 else "")
+            else:
+                prior_candidates = [value for value in match.candidates if unresolved or value.ref == source]
+                options = list({m.ref: m for m in [match.model, *prior_candidates, match.old_model]
+                                if m is not None}.values())
+                if unresolved:
+                    precise = display_precision(cfg)
+                    options = [value for value in options
+                               if (comparison := source_comparison(match.deck, value, precise)) and comparison.ok]
         selection = request.args.get("cell")
         selected = next((m for m in options if m.ref == (selection or source)), None)
         workbooks = {path.name: (slot, path, name) for slot, path, name in originals(job) if slot != "deck"}
-        discovered_refs = {value.ref for value in discovered} if match is not None else set()
-        result = {"can_discover": match is not None and match.status in UNRESOLVED,
-                  "source_search_done": match is not None and cached is not None,
+        discovered_refs = {value.ref for value in discovered}
+        result = {"can_discover": unresolved,
+                  "source_search_done": cached is not None,
+                  "ai_eligible": unresolved and bool(ai_candidates(match.deck, cached or [], cfg)),
                   "source_suggestion": match.source_suggestion if match is not None else "",
                   "possible_count": len(discovered_refs),
                   "sources": [
@@ -829,18 +842,26 @@ def create_app(config_path: str | None = None) -> Flask:
              "metric": " · ".join(filter(None, (m.row_label, m.col_label)))} for m in options
         ]}
         if selected is None:
-            result["message"] = "Choose a candidate cell to inspect." if options else "This finding has no linked workbook cell."
+            if len(options) > 1:
+                result["message"] = "Several cells reconcile. Choose one to inspect its label and period."
+            elif options:
+                result["message"] = "Choose the candidate cell to inspect its label and period."
+            elif unresolved and cached is not None:
+                result["message"] = "No eligible Excel cell matches the figure at the slide’s displayed precision."
+            else:
+                result["message"] = "This finding has no linked workbook cell."
             return jsonify(result)
         workbook = workbooks.get(selected.workbook)
         if workbook is None:
             result["message"] = "The workbook could not be mapped to an original upload."
             return jsonify(result)
         slot, path, name = workbook
-        if selected.ref in discovered_refs and match.status in UNRESOLVED:
-            comparison = compare(match.deck, selected, job.cfg or Config())
+        if unresolved:
+            comparison = source_comparison(match.deck, selected, display_precision(cfg))
             result["candidate_check"] = (
-                "Value reconciles with the review’s tolerance. The source remains unverified." if comparison and comparison.ok else
-                "The value differs from the slide." if comparison else "These values could not be compared.")
+                "Value reconciles with inferred units or scale. The source remains unverified."
+                if comparison and comparison.ok and comparison.inferred else
+                "Value reconciles at displayed precision. The source remains unverified.")
         result.update({"file": name, "slot": slot, "download": f"/api/jobs/{job.id}/original/{slot}"})
         try:
             result.update(workbook_preview(path, selected, top=request.args.get("row", type=int),

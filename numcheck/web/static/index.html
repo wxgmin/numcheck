@@ -86,7 +86,7 @@
           <button type="button" class="tip-trigger" aria-label="What AI adds" aria-describedby="tip-ai">?</button>
           <span class="tip-text" role="tooltip" id="tip-ai">AI can suggest which candidate label best describes a figure. You can also ask on demand from Inspect. Cloud providers receive labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. Requests use the selected provider allowance.</span>
         </div>
-        <p class="note">Suggests Excel sources for unresolved figures during the review.</p>
+        <p class="note">Searches Excel first, then asks AI to compare the labels of cells that reconcile.</p>
         <p class="note" id="ai-review-status" role="status">Off by default.</p>
         <details class="settings ai-settings" id="ai-settings">
           <summary>
@@ -160,7 +160,7 @@
           <div class="check">
             <input type="checkbox" id="source-search-auto" checked>
             <div><label for="source-search-auto">Search for possible sources automatically</label>
-            <span class="note">Searches the current Excel files locally for every unresolved figure.</span></div>
+            <span class="note" id="source-search-note">Searches the current Excel files locally for every unresolved figure.</span></div>
           </div>
           <div class="check">
             <input type="checkbox" id="set-require-label" checked>

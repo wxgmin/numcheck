@@ -38,16 +38,23 @@ def test_source_review_requires_independent_label_scope_and_value_evidence(monke
     segment = dn("Aerospace Components Revenue", 100, "$100.0m", period="fy24", decimals=1)
 
     cases = [
-        (segment, [mv("Revenue", 100, period="fy24", section_label="Aerospace Components")], "matched"),
-        (generic, [mv("Subscription revenue", 100, period="fy24")], "unmatched"),
-        (generic, [mv("Revenue", 105, period="fy24")], "unmatched"),
-        (generic, [mv("Revenue", 100, period="fy24"), mv("Revenue", 110, period="fy24", addr="B3")], "unmatched"),
+        (segment, [mv("Revenue", 100, period="fy24", section_label="Aerospace Components")], "matched", 1, True),
+        (generic, [mv("Subscription revenue", 100, period="fy24")], "unmatched", 0, False),
+        (generic, [mv("Revenue", 105, period="fy24")], "unmatched", 0, False),
+        (generic, [mv("Revenue", 100, period="fy24"), mv("Revenue", 110, period="fy24", addr="B3")],
+         "unmatched", 1, True),
+        (generic, [mv("Revenue", 100, period="fy24"), mv("Revenue", 100, period="fy24", addr="B3")],
+         "unmatched", 2, False),
+        (dn("Revenue FY24A", 100, "$100.0m", period="fy24", decimals=1),
+         [mv("Revenue", 100, period="fy24", col_label="FY24E"),
+          mv("Revenue", 100, period="fy24", col_label="FY24 Forecast", addr="B3")], "unmatched", 0, False),
     ]
-    for deck, values, expected in cases:
+    for deck, values, expected, options, suggestion in cases:
         matches, _ = review_sources([Match(deck, None, "unmatched")], ModelIndex(values, config),
                                     config, [], Config(llm="ollama"))
         match = matches[0]
-        assert match.status == expected and match.source_suggestion
+        assert match.status == expected
+        assert len(match.source_options) == options and bool(match.source_suggestion) == suggestion
         if expected == "matched":
             assert match.method == "source_ai" and match.comparison.ok
         else:
