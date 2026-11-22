@@ -49,7 +49,7 @@ the solution or fallback for each, and the contracts between modules.
 | Numbers split across runs/paragraphs, text in groups, placeholders, SmartArt | Paragraph-level text; recursive group walk; placeholders included; SmartArt text read from `dgm` parts when present | Warning `smartart_not_read` |
 | Slide number / date / footer placeholders | Excluded by placeholder type | — |
 | Hidden slides | Extracted, flagged `SlideInfo.hidden`; issues on hidden slides downgraded | — |
-| Numbers inside images/screenshots/pasted Excel pictures | Counted per slide → warning `images_not_checked` | Optional OCR (LibreOffice → PDF → per-page render → Tesseract), confidence 0.7, deduped against native text |
+| Numbers inside images/screenshots/pasted Excel pictures | Counted per slide → warning `images_not_checked` | Optional RapidOCR reads embedded raster pictures directly, with picture provenance and confidence 0.7. Legacy Tesseract fallback scans rendered slides and deduplicates native figures. |
 | Speaker notes | Ignored by default (`read_speaker_notes`) | — |
 | Text-box prose "Revenue grew 9% to $1.2bn in FY24, with EBITDA of $300m" | Label = nearest noun phrase before each number, bounded by previous number / punctuation; period from the clause | Value-only verification (unique ≥3 significant digits) |
 | Tables: multi-row headers, merged cells, row labels not in col 0, transposed tables (periods as rows), blank spacer rows/cols, units column | Header detection (period-like rows/cols), label column detection, merged-cell propagation, unit column detection | Table-block alignment against the model (see 1.4) |

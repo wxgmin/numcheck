@@ -27,6 +27,7 @@ from numcheck.models import (
     NumCheckInputError,
     ReviewResult,
     ReviewWarning,
+    Source,
 )
 
 log = logging.getLogger(__name__)
@@ -70,10 +71,6 @@ def run_review(
 
     report("deck", 0.08, "Reading deck")
     deck = extract_deck_full(deck_path, config)
-    if config.ocr:
-        from numcheck.extraction.ocr_extractor import extract_deck_ocr
-
-        deck.numbers.extend(extract_deck_ocr(deck_path, existing=deck.numbers, warnings=warnings))
     warnings.extend(deck.warnings)
     if not deck.numbers:
         warnings.append(ReviewWarning(
@@ -126,6 +123,10 @@ def run_review(
     except Exception:  # noqa: BLE001 - an optional enrichment must not abort the review
         log.exception("derived verification failed")
         warnings.append(ReviewWarning("derived_failed", "Derived growth/margin verification was skipped."))
+
+    for match in matches:
+        if match.deck.source == Source.OCR:
+            match.confidence = min(match.confidence, match.deck.confidence)
 
     report("checks", 0.72, "Running checks")
     collector = IssueCollector(config)

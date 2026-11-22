@@ -73,7 +73,7 @@ source .venv/bin/activate       # macOS / Linux
 pip install -e ".[llm]"         # or just: pip install -e .
 ```
 
-Optional extras: `.[ocr]` (pictures; also needs LibreOffice and Tesseract),
+Optional extras: `.[ocr]` (local OCR for embedded pictures),
 `.[crypto]` (password-protected files), `.[dev]` (tests and lint). Run
 `numcheck doctor` to see what is available.
 
@@ -220,7 +220,9 @@ qualifier conflicts, and more), with the solution and fallback for each.
 
 ## Limitations
 
-- Numbers inside pictures need `--ocr` and external tools. OCR results are
+- Numbers inside embedded raster pictures need **Read numbers in images** or
+  `--ocr`. RapidOCR runs locally and is included in the Windows download.
+  Source installations can add it with `pip install -e ".[ocr]"`. OCR results are
   lower confidence.
 - Workbooks saved by code without calculated values need to be opened and
   saved in Excel. NumCheck tries a LibreOffice recalculation when available.

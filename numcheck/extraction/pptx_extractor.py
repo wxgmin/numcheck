@@ -1530,7 +1530,7 @@ def extract_deck_full(path: str, config: Config | None = None) -> DeckExtraction
         from numcheck.extraction.ocr_extractor import extract_deck_ocr
 
         before = len(result.warnings)
-        result.numbers.extend(extract_deck_ocr(real, existing=result.numbers, warnings=result.warnings))
+        result.numbers.extend(extract_deck_ocr(real, existing=result.numbers, warnings=result.warnings, config=config))
         ocr_ok = not any(w.code == "ocr_unavailable" for w in result.warnings[before:])
         counts: dict[int, int] = {}
         for dn in result.numbers:
@@ -1545,7 +1545,7 @@ def extract_deck_full(path: str, config: Config | None = None) -> DeckExtraction
         result.warnings.append(ReviewWarning(
             "images_not_checked",
             f"{total} picture(s) on slide(s) {', '.join(map(str, pic_slides))} may contain numbers that were not "
-            "checked. Enable OCR (extraction.ocr = true; needs LibreOffice, Tesseract and pytesseract) or verify "
+            "checked. Enable local OCR or verify "
             "them manually.", file=name, count=total))
     for w in result.warnings:
         if not w.file:

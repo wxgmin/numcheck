@@ -78,7 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="How the deck rounds numbers (default: round)")
     r.add_argument("--base-period", default=None,
                    help="Default period for numbers without one, e.g. FY24")
-    r.add_argument("--ocr", action="store_true", help="Also read numbers inside pictures (needs LibreOffice + Tesseract)")
+    r.add_argument("--ocr", action="store_true", help="Also read numbers inside pictures using local OCR")
     r.add_argument("--password", default=None, help="Password for encrypted files (needs msoffcrypto-tool)")
     r.add_argument("--format", choices=("text", "json"), default="text", help="Console output format")
     r.add_argument("--fail-on", choices=("high", "medium", "low"), default=None,

@@ -1,8 +1,7 @@
 """Optional OCR fallback for numbers baked into slide pictures.
 
-Pipeline: PPTX -> PDF (LibreOffice, located via :mod:`fileio`, never a hard-coded
-``soffice``) -> one PNG per page (``pdftoppm`` or PyMuPDF) -> Tesseract
-``image_to_data`` -> lines -> the same number scanner as native text.
+RapidOCR reads embedded raster pictures directly. The legacy slide-render and
+Tesseract path remains available when its optional dependencies are installed.
 
 Every dependency is optional.  A missing one yields ``ReviewWarning(
 "ocr_unavailable", <what is missing and how to install it>)`` and an empty list,
@@ -15,6 +14,9 @@ that LibreOffice rasterised while rendering) would otherwise be counted twice.
 
 from __future__ import annotations
 
+import importlib.util
+import io
+import re
 import shutil
 import subprocess
 import tempfile
@@ -150,7 +152,7 @@ def _same_number(a: DeckNumber, b: DeckNumber) -> bool:
 
 
 def numbers_from_lines(slide_number: int, lines: list[str], native: list[DeckNumber], config: Config,
-                       ) -> list[DeckNumber]:
+                       *, shape_id: str = "ocr") -> list[DeckNumber]:
     """Scan OCR lines of one slide; drop numbers already read natively on that slide."""
     from numcheck.extraction.pptx_extractor import _SlideCtx, scan_paragraph
 
@@ -161,8 +163,8 @@ def numbers_from_lines(slide_number: int, lines: list[str], native: list[DeckNum
     pool = [n for n in native if n.slide_number == slide_number and n.source != Source.OCR]
     for li, line in enumerate(lines):
         try:
-            nums, _skipped = scan_paragraph(ctx, line, hint, source=Source.OCR, shape_id="ocr", para_idx=li,
-                                            uid_prefix=f"s{slide_number}-ocr-p{li}")
+            nums, _skipped = scan_paragraph(ctx, line, hint, source=Source.OCR, shape_id=shape_id, para_idx=li,
+                                            uid_prefix=f"s{slide_number}-{shape_id}-ocr-p{li}")
         except Exception:  # noqa: BLE001 - one odd line must not abort OCR
             continue
         for dn in nums:
@@ -180,9 +182,96 @@ def numbers_from_lines(slide_number: int, lines: list[str], native: list[DeckNum
 # --------------------------------------------------------------------------- #
 
 
+def _rapid_available() -> bool:
+    return importlib.util.find_spec("rapidocr_onnxruntime") is not None
+
+
+def ocr_capability() -> dict:
+    if _rapid_available():
+        return {"available": True, "detail": "Reads embedded pictures locally with RapidOCR."}
+    module, reason = _find_tesseract_deps()
+    if module and fileio.soffice_binary() and _can_render_pages():
+        return {"available": True, "detail": "Reads rendered slides locally with Tesseract."}
+    return {"available": False,
+            "detail": f"Install NumCheck with its OCR extra for RapidOCR. Tesseract fallback: {reason or 'slide renderer missing'}."}
+
+
+def _rapid_lines(results) -> list[str]:
+    boxes = []
+    for polygon, text, score in results or []:
+        if float(score) < 0.6 or not text.strip():
+            continue
+        xs, ys = zip(*polygon)
+        height = max(ys) - min(ys)
+        if height > 0:
+            boxes.append(((max(ys) + min(ys)) / 2, min(xs), height, text.strip()))
+    rows = []
+    for center, left, height, text in sorted(boxes):
+        if not rows or abs(center - rows[-1][0]) > 0.45 * min(height, rows[-1][1]):
+            rows.append((center, height, []))
+        rows[-1][2].append((left, text))
+    # OCR sometimes drops the space between a fiscal tag and a title-cased metric.
+    return [re.sub(r"(\b(?:FY|CY)(?:\d{4}|\d{2})(?:[AEF](?=[A-Z][a-z]))?)(?=[A-Z][a-z])",
+                   r"\1 ", " ".join(text for _, text in sorted(row))) for _, _, row in rows]
+
+
+def _picture_png(shape) -> bytes:
+    from PIL import Image
+
+    with Image.open(io.BytesIO(shape.image.blob)) as original:
+        w, h = original.size
+        if w * h > 24_000_000:
+            raise ValueError("image exceeds the OCR size limit")
+        crop = (max(0, round(w * shape.crop_left)), max(0, round(h * shape.crop_top)),
+                min(w, round(w * (1 - shape.crop_right))), min(h, round(h * (1 - shape.crop_bottom))))
+        with original.crop(crop) as visible:
+            if not visible.width or not visible.height:
+                raise ValueError("image has no visible area")
+            visible.thumbnail((2400, 2400))
+            with visible.convert("RGBA") as transparent, Image.new("RGB", visible.size, "white") as image:
+                image.paste(transparent, mask=transparent.getchannel("A"))
+                buffer = io.BytesIO()
+                image.save(buffer, format="PNG")
+                return buffer.getvalue()
+
+
+def _extract_rapid(path: str, config: Config, warnings: list | None) -> list[DeckNumber]:
+    from pptx import Presentation
+    from rapidocr_onnxruntime import RapidOCR
+
+    from numcheck.extraction.pptx_extractor import _is_picture, _iter_shapes
+
+    deck = Presentation(path)
+    out = []
+    engine = None
+    for slide_no, slide in enumerate(deck.slides, 1):
+        for shape, _ in _iter_shapes(slide.shapes):
+            if not _is_picture(shape):
+                continue
+            if engine is None:
+                engine = RapidOCR(intra_op_num_threads=2, inter_op_num_threads=1)
+            try:
+                boxes, _ = engine(_picture_png(shape), use_cls=False)
+                out.extend(numbers_from_lines(slide_no, _rapid_lines(boxes), [], config,
+                                              shape_id=str(shape.shape_id)))
+            except Exception as exc:
+                if warnings is not None:
+                    warnings.append(ReviewWarning("ocr_picture_failed",
+                                                  f"A picture on slide {slide_no} could not be read by OCR ({exc}).",
+                                                  slide_number=slide_no, count=1))
+    return out
+
+
 def extract_deck_ocr(path: str, existing: list[DeckNumber] | None = None,
-                     warnings: list | None = None) -> list[DeckNumber]:
-    """OCR every slide and return numbers not already present in *existing*."""
+                     warnings: list | None = None, config: Config | None = None) -> list[DeckNumber]:
+    """Read picture figures with the available local engine."""
+    config = config or Config()
+    if _rapid_available():
+        try:
+            return _extract_rapid(path, config, warnings)
+        except Exception:
+            _warn(warnings, "RapidOCR could not initialize. Numbers inside pictures were not read.")
+            return []
     existing = existing or []
     pytesseract, why = _find_tesseract_deps()
     if pytesseract is None:
@@ -197,7 +286,6 @@ def extract_deck_ocr(path: str, existing: list[DeckNumber] | None = None,
                         "(pip install pymupdf). Numbers inside pictures were not read.")
         return []
 
-    config = Config()
     out: list[DeckNumber] = []
     try:
         with tempfile.TemporaryDirectory(prefix="numcheck_ocr_") as tmp:

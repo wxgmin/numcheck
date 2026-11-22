@@ -158,7 +158,7 @@
       var ocr = m.ocr && m.ocr.available;
       $("set-ocr").disabled = !ocr;
       $("set-ocr").checked = !!(ocr && d.ocr);
-      $("ocr-note").textContent = ocr ? "Slower. Reads numbers inside pictures." : "Unavailable: LibreOffice and Tesseract were not found.";
+      $("ocr-note").textContent = (m.ocr && m.ocr.detail) || "Local OCR is unavailable.";
       paintLlmNote();
       if (sel.value !== "chatgpt") refreshChatGPT(false);
     }).catch(function () { /* meta is optional; defaults in markup still work */ });

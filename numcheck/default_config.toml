@@ -32,7 +32,7 @@ batch_size = 25
 redact = []                      # strings replaced with [REDACTED] before sending, e.g. ["Project Atlas"]
 
 [extraction]
-ocr = false                      # read numbers inside pictures (LibreOffice + Tesseract)
+ocr = false                      # read numbers inside embedded pictures with local OCR
 max_file_mb = 250
 large_workbook_cells = 2000000   # stream larger workbooks read-only
 read_speaker_notes = false

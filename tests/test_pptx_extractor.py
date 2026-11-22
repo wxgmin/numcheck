@@ -794,6 +794,17 @@ def test_ocr_lines_from_data_orders_words():
     assert ocr_extractor.lines_from_data(data) == ["Revenue $1.2bn", "EBITDA 300"]
 
 
+def test_rapid_ocr_rejoins_row_fragments_and_restores_fiscal_spacing():
+    def box(x, y):
+        return [(x, y), (x + 80, y), (x + 80, y + 20), (x, y + 20)]
+
+    lines = ocr_extractor._rapid_lines([
+        (box(200, 20), "$1,168.4m", .95), (box(10, 20), "FY24Revenue", .93),
+        (box(12, 55), "EBITDA", .92), (box(200, 55), "$253m", .98), (box(20, 95), "noise", .3),
+    ])
+    assert lines == ["FY24 Revenue $1,168.4m", "EBITDA $253m"]
+
+
 def test_ocr_numbers_deduped_against_native():
     from numcheck.models import DeckNumber
 
@@ -807,6 +818,7 @@ def test_ocr_numbers_deduped_against_native():
 
 
 def test_ocr_unavailable_warns_instead_of_raising(tmp_path, monkeypatch):
+    monkeypatch.setattr(ocr_extractor, "_rapid_available", lambda: False)
     monkeypatch.setattr(ocr_extractor, "_find_tesseract_deps", lambda: (None, "pytesseract is not installed"))
     warns = []
     assert ocr_extractor.extract_deck_ocr(str(tmp_path / "x.pptx"), existing=[], warnings=warns) == []
@@ -820,6 +832,7 @@ def test_ocr_off_never_called_and_on_but_unavailable_keeps_image_warning(tmp_pat
     s = add_slide(prs, "Overview")
     s.shapes.add_picture(str(img), Inches(1), Inches(2), Inches(2), Inches(2))
     path = save(prs, tmp_path)
+    monkeypatch.setattr(ocr_extractor, "_rapid_available", lambda: False)
     monkeypatch.setattr(ocr_extractor, "_find_tesseract_deps", lambda: (None, "missing"))
     res = extract_deck_full(path, Config(ocr=True))
     codes = {w.code for w in res.warnings}
@@ -844,6 +857,7 @@ def test_ocr_full_pipeline_with_fakes(tmp_path, monkeypatch):
             return {"text": ["Revenue", "$7m"], "conf": ["95", "93"], "block_num": [1, 1], "par_num": [1, 1],
                     "line_num": [1, 1], "left": [5, 50]}
 
+    monkeypatch.setattr(ocr_extractor, "_rapid_available", lambda: False)
     monkeypatch.setattr(ocr_extractor, "_find_tesseract_deps", lambda: (FakeTess, ""))
     monkeypatch.setattr(ocr_extractor.fileio, "soffice_binary", lambda: "soffice")
     monkeypatch.setattr(ocr_extractor, "_can_render_pages", lambda: True)
@@ -854,3 +868,17 @@ def test_ocr_full_pipeline_with_fakes(tmp_path, monkeypatch):
     assert [n.raw_text for n in ocr] == ["$7m"] and ocr[0].confidence == 0.7 and ocr[0].slide_number == 1
     assert not any(w.code == "images_not_checked" for w in res.warnings)
     assert res.slides[0].number_count == 1
+
+    from openpyxl import Workbook
+
+    from numcheck.runner import run_review
+
+    wb = Workbook()
+    wb.active.append(["Metric", "FY24"])
+    wb.active.append(["Revenue", 7])
+    model = tmp_path / "model.xlsx"
+    wb.save(model)
+    review = run_review(path, [str(model)], out_dir=str(tmp_path / "report"), annotate=False, config=Config(ocr=True))
+    read = [m for m in review.matches if m.deck.source == Source.OCR]
+    assert [m.deck.raw_text for m in read] == ["$7m"]
+    assert read[0].confidence <= 0.7

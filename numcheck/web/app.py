@@ -29,6 +29,7 @@ from numcheck import __version__
 from numcheck.config import Config, load_config
 from numcheck.demo import ASSET_DIR, DEMO_FILES, build_demo
 from numcheck.extraction import fileio
+from numcheck.extraction.ocr_extractor import ocr_capability
 from numcheck.extraction.xlsx_extractor import extract_model_full
 from numcheck.llm.chatgpt import ChatGPTConnection
 from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
@@ -411,17 +412,6 @@ def create_job_from_request(mgr: JobManager, config_path: str | None, demo: bool
 # Meta
 # --------------------------------------------------------------------------- #
 
-def _ocr_available() -> bool:
-    if not fileio.soffice_binary():
-        return False
-    try:
-        import importlib.util
-
-        return importlib.util.find_spec("pytesseract") is not None
-    except (ImportError, ValueError):
-        return False
-
-
 def provider_info(cfg: Config) -> list[dict[str, Any]]:
     env = os.environ
     codex = env.get("NUMCHECK_CODEX_BIN") or shutil.which("codex")
@@ -541,12 +531,12 @@ def create_app(config_path: str | None = None) -> Flask:
             "version": __version__,
             "slide_preview": bool(fileio.soffice_binary()),
             "providers": provider_info(cfg),
-            "ocr": {"available": _ocr_available()},
+            "ocr": ocr_capability(),
             "limits": {"max_upload_mb": mb, "tolerance_max": 0.1, "base_period_max_chars": 12},
             "config_file": Path(cfg.source_path).name if cfg.source_path else None,
             "defaults": {"llm": cfg.llm if cfg.llm in PROVIDERS else "off",
                          "tolerance": cfg.relative_tolerance, "rounding_mode": cfg.rounding_mode,
-                         "base_period": cfg.base_period, "annotate": True, "ocr": False,
+                         "base_period": cfg.base_period, "annotate": True, "ocr": cfg.ocr,
                          "require_label_evidence": True},
         })
 
