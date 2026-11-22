@@ -760,6 +760,8 @@
         el("td", { class: "r num", text: m.slide_number }),
         el("td", { class: "r mono" }, [m.deck_uid ? evidenceButton(m.raw_text,
           m.raw_text + " on slide " + m.slide_number, { figure: m.deck_uid }) : m.raw_text]),
+        el("td", null, [m.deck_uid ? evidenceButton("Inspect", m.raw_text + " on slide " + m.slide_number,
+          { figure: m.deck_uid }, true) : "—"]),
         el("td", { class: "clip", text: m.label, title: m.label }),
         el("td", null, [statusPill(m.status)]),
         el("td", { class: "mono clip", text: m.source_cell, title: m.source_cell }),
@@ -768,7 +770,7 @@
         el("td", { class: "r mono", text: m.confidence === null || m.confidence === undefined ? "" : Math.round(m.confidence * 100) + "%" })
       ]));
     });
-    if (!rows.length) body.appendChild(el("tr", null, [el("td", { colspan: 8, class: "table-empty", text: "No numbers match." })]));
+    if (!rows.length) body.appendChild(el("tr", null, [el("td", { colspan: 9, class: "table-empty", text: "No numbers match." })]));
     $("covCount").textContent = rows.length === S.matches.length ? plural(rows.length, "number") : rows.length + " of " + plural(S.matches.length, "number");
     var more = $("covMore");
     more.hidden = rows.length <= S.covLimit;
@@ -849,17 +851,6 @@
       }).map(function (row) { return gridRow(row, false); })));
       var gridHost = el("div", { class: "evidence-scroll", tabindex: "0", role: "region", "aria-label": "Workbook grid" }, [grid]);
       host.appendChild(gridHost);
-      var highlighted = grid.querySelector(".is-source");
-      if (highlighted) {
-        var gridBox = gridHost.getBoundingClientRect(), targetBox = highlighted.getBoundingClientRect();
-        var pinnedLabel = grid.querySelector(".sheet-label");
-        var frozenWidth = (pinnedLabel ? pinnedLabel.offsetWidth : 0) + grid.querySelector(".sheet-rownum").offsetWidth;
-        if (targetBox.right > gridBox.right) gridHost.scrollLeft = targetBox.right - gridBox.right + 12;
-        if (targetBox.top > gridBox.top + gridHost.clientHeight - highlighted.offsetHeight) {
-          gridHost.scrollTop = Math.max(0, targetBox.top - gridBox.top - gridHost.clientHeight / 2);
-        }
-        if (targetBox.left < gridBox.left + frozenWidth && !highlighted.classList.contains("sheet-label")) gridHost.scrollLeft = 0;
-      }
       if (data.formula) {
         host.appendChild(el("p", { class: "evidence-formula" }, [el("strong", { text: "Formula" }),
           el("code", { text: data.formula })]));
@@ -867,6 +858,7 @@
       }
       if (data.hidden_sheet) host.appendChild(el("p", { class: "note", text: "This sheet is hidden in the original workbook." }));
     }
+    var actions = el("div", { class: "evidence-actions source-confirmation" });
     if (data.rows && issueId !== undefined && data.slot !== "prior") {
       var confirmed = reviewOf(issueId).confirmedSource;
       var active = confirmed && confirmed.slot === data.slot && confirmed.sheet === data.sheet && confirmed.address === data.address;
@@ -877,12 +869,25 @@
           paintWorkbook(host, data, loadCell, issueId);
           host.querySelector(".source-confirmation button").focus();
         } } });
-      host.appendChild(el("div", { class: "source-confirmation" }, [confirm,
-        el("p", { class: "note", text: active ? "Source confirmed for this review. Findings remain as calculated."
-          : "Record the source you reviewed for the next analyst." })]));
+      actions.appendChild(confirm);
+      if (active) actions.appendChild(el("span", { class: "note", role: "status", text: "Source confirmed for this review." }));
     }
+    if (data.download) actions.appendChild(originalLink(data.download, "Download original Excel"));
     if (data.message) host.appendChild(el("p", { class: "note", text: data.message }));
-    if (data.download) host.appendChild(originalLink(data.download, "Download original Excel"));
+    if (actions.childElementCount) host.appendChild(actions);
+    var highlighted = host.querySelector(".is-source");
+    if (highlighted) {
+      var gridHost = host.querySelector(".evidence-scroll");
+      var gridBox = gridHost.getBoundingClientRect(), targetBox = highlighted.getBoundingClientRect();
+      var pinnedLabel = gridHost.querySelector(".sheet-label");
+      var frozenWidth = (pinnedLabel ? pinnedLabel.offsetWidth : 0) + gridHost.querySelector(".sheet-rownum").offsetWidth;
+      if (targetBox.right > gridBox.right) gridHost.scrollLeft = targetBox.right - gridBox.right + 12;
+      if (targetBox.top > gridBox.top + gridHost.clientHeight - highlighted.offsetHeight) {
+        gridHost.scrollTop = Math.max(0, targetBox.top - gridBox.top - gridHost.clientHeight / 2);
+      }
+      if (targetBox.left < gridBox.left + frozenWidth && !highlighted.classList.contains("sheet-label")) gridHost.scrollLeft = 0;
+    }
+
   }
 
   function openEvidence(params, label) {
@@ -906,7 +911,8 @@
       } else {
         slide.appendChild(el("p", { class: "note", text: data.message }));
       }
-      if (data.download) slide.appendChild(originalLink(data.download, "Download original PowerPoint"));
+      if (data.download) slide.appendChild(el("div", { class: "evidence-actions" },
+        [originalLink(data.download, "Download original PowerPoint")]));
     }).catch(function (err) { if (run === previewSequence) slide.textContent = err.message; });
 
     function loadCell(ref, row, col) {
