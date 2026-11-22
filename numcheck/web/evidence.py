@@ -5,6 +5,7 @@ import base64
 import io
 import threading
 from contextlib import closing
+from math import ceil, floor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -200,12 +201,15 @@ def slide_preview(path: Path, directory: Path, location, token: str, *, exact_te
                 image = bitmap.to_pil().convert("RGB")
                 if region:
                     x0, y0, x1, y1 = region
-                    box = (max(0, x0 * image.width - 3), max(0, y0 * image.height - 3),
-                           min(image.width - 1, x1 * image.width + 3), min(image.height - 1, y1 * image.height + 3))
-                    if box[0] < box[2] and box[1] < box[3]:
+                    left, top = floor(x0 * image.width), floor(y0 * image.height)
+                    right, bottom = ceil(x1 * image.width), ceil(y1 * image.height)
+                    if max(0, left) < min(image.width, right) and max(0, top) < min(image.height, bottom):
                         draw = ImageDraw.Draw(image)
-                        draw.rectangle(box, outline="#fff6cf", width=7)
-                        draw.rectangle(box, outline="#bd5b06", width=3)
+                        # Pillow draws inward. Keep both strokes outside the figure, even at a slide edge.
+                        draw.rectangle((left - 10, top - 10, right + 10, bottom + 10),
+                                       outline="#fff6cf", width=5)
+                        draw.rectangle((left - 9, top - 9, right + 9, bottom + 9),
+                                       outline="#bd5b06", width=3)
                     else:
                         kind = ""
                 output = io.BytesIO()
