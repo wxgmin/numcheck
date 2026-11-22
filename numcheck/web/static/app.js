@@ -32,6 +32,7 @@
   // ---------------------------------------------------------------------- state
   var S = {
     meta: null,
+    chatGPTConnected: false,
     files: { deck: [], models: [], old: [] },
     jobId: null, polling: null, running: false,
     data: null, issues: [], matches: [],
@@ -198,6 +199,23 @@
     if (id === "openai-compatible" && provider && !provider.available) setup.textContent = provider.reason;
     if (id === "chatgpt") setup.textContent = "Uses your eligible ChatGPT plan for label matching. NumCheck saves your connection on this computer and renews it when needed.";
     if (links[id]) setup.appendChild(el("a", { href: links[id][1], target: "_blank", rel: "noopener", text: links[id][0] }));
+    paintAIReviewStatus();
+  }
+
+  function paintAIReviewStatus() {
+    var picker = $("set-llm"), status = $("ai-review-status");
+    var provider = picker.value || "off";
+    if (!$("llm-auto").checked) {
+      status.textContent = S.chatGPTConnected && (provider === "off" || provider === "chatgpt")
+        ? "Off for this review. ChatGPT is connected." : "Off for this review.";
+    } else if (provider === "off") {
+      status.textContent = "Choose an AI provider to use in this review.";
+    } else if (provider === "chatgpt" && !$("chatgpt-model").value) {
+      status.textContent = S.chatGPTConnected
+        ? "Choose a ChatGPT model when the list is ready." : "Connect ChatGPT to use it in this review.";
+    } else {
+      status.textContent = "On for this review with " + picker.selectedOptions[0].text + ".";
+    }
   }
 
   function appendProviderSettings(fd) {
@@ -213,6 +231,8 @@
     var status = $("chatgpt-status"), picker = $("chatgpt-model"), button = $("chatgpt-signin");
     try {
       var state = await api("GET", "/api/chatgpt/status");
+      S.chatGPTConnected = state.connected;
+      paintAIReviewStatus();
       $("chatgpt-shortcut").textContent = state.connected ? "Manage ChatGPT connection" : "Connect ChatGPT";
       $("chatgpt-disconnect").hidden = !state.connected;
       $("chatgpt-disconnect").disabled = state.pending;
@@ -238,6 +258,7 @@
         picker.disabled = true;
       }
     } catch (err) { status.textContent = err.message; }
+    finally { paintAIReviewStatus(); }
   }
 
   async function connectChatGPT() {
@@ -362,6 +383,14 @@
     if (!S.files.models.length) return ["At least one model is required.", "Add an .xlsx file to the Models slot."];
     var bad = [].concat(S.files.deck, S.files.models, S.files.old).filter(function (e) { return e.error; })[0];
     if (bad) return [bad.file.name + ": " + bad.error + ".", "Remove the file or replace it."];
+    if ($("llm-auto").checked && (!$("set-llm").value || $("set-llm").value === "off")) {
+      $("ai-settings").open = true;
+      return ["Choose an AI provider.", "Open AI provider settings or turn off AI for this review."];
+    }
+    if ($("llm-auto").checked && $("set-llm").value === "chatgpt" && !$("chatgpt-model").value) {
+      $("ai-settings").open = true;
+      return ["Choose a ChatGPT model.", "Connect your account and select a model in AI provider settings."];
+    }
     var tol = $("set-tol").value.trim();
     if (tol && (isNaN(Number(tol)) || Number(tol) < 0 || Number(tol) > 0.1)) return ["Tolerance must be between 0 and 0.1.", "0.1 equals 10 percent."];
     return null;
@@ -1308,9 +1337,22 @@
       setStatus("idle", "Ready");
       $("in-deck").focus();
     });
-    $("set-llm").addEventListener("change", paintLlmNote);
+    $("llm-auto").addEventListener("change", function () {
+      if ($("llm-auto").checked && $("set-llm").value === "off") {
+        if (S.chatGPTConnected) {
+          $("set-llm").value = "chatgpt";
+          paintLlmNote();
+        } else {
+          $("ai-settings").open = true;
+        }
+      }
+      paintAIReviewStatus();
+    });
+    $("set-llm").addEventListener("change", function () {
+      if ($("set-llm").value === "off") $("llm-auto").checked = false;
+      paintLlmNote();
+    });
     $("chatgpt-shortcut").addEventListener("click", function () {
-      $("settings").open = true;
       $("set-llm").value = "chatgpt";
       paintLlmNote();
       $("chatgpt-signin").focus();
@@ -1323,7 +1365,10 @@
         await refreshChatGPT(false);
       } catch (err) { $("chatgpt-status").textContent = err.message; }
     });
-    $("chatgpt-model").addEventListener("change", function () { $("provider-status").textContent = "Connection not checked."; });
+    $("chatgpt-model").addEventListener("change", function () {
+      $("provider-status").textContent = "Connection not checked.";
+      paintAIReviewStatus();
+    });
     $("test-provider").addEventListener("click", testProvider);
     $("provider-fields").addEventListener("input", function () { $("provider-status").textContent = "Connection not checked."; });
     $("issueSearch").addEventListener("input", function (e) { S.search = e.target.value; renderIssues(); });

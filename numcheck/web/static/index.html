@@ -77,19 +77,25 @@
         <button type="button" class="tip-trigger" aria-label="How NumCheck checks figures" aria-describedby="tip-how">?</button>
         <span class="tip-text" role="tooltip" id="tip-how">NumCheck reads slide figures and searches Excel using metric labels, periods, units, and layout. It compares the source value at the slide’s displayed precision. Inspect opens the original evidence. A verified figure reconciles to the supplied workbook. NumCheck flags figures it cannot trace. Local review needs no AI account or credits.</span>
       </div>
-      <button type="button" class="btn small" id="chatgpt-shortcut">Connect ChatGPT</button>
-      <details class="settings" id="settings">
-        <summary>
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
-          Review settings
-        </summary>
-        <div class="settings-body">
+      <div class="ai-review">
+        <div class="field-heading">
+          <label class="ai-toggle" for="llm-auto">
+            <input type="checkbox" id="llm-auto" aria-describedby="ai-review-status">
+            Use AI during reviews
+          </label>
+          <button type="button" class="tip-trigger" aria-label="What AI adds" aria-describedby="tip-ai">?</button>
+          <span class="tip-text" role="tooltip" id="tip-ai">AI can suggest which candidate label best describes a figure. You can also ask on demand from Inspect. Cloud providers receive labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. Requests use the selected provider allowance.</span>
+        </div>
+        <p class="note">Helps match ambiguous slide labels to Excel.</p>
+        <p class="note" id="ai-review-status" role="status">Off by default.</p>
+        <details class="settings ai-settings" id="ai-settings">
+          <summary>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            AI provider settings
+          </summary>
           <div class="field">
-            <div class="field-heading">
-              <label for="set-llm">AI label assistance</label>
-              <button type="button" class="tip-trigger" aria-label="What AI adds" aria-describedby="tip-ai">?</button>
-              <span class="tip-text" role="tooltip" id="tip-ai">AI can suggest which candidate label best describes a figure. Use it on demand in Inspect, or opt in to automatic assistance. The provider receives labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. AI may leave a figure unresolved. Requests use the selected provider allowance.</span>
-            </div>
+            <button type="button" class="btn small" id="chatgpt-shortcut">Connect ChatGPT</button>
+            <label for="set-llm">AI provider</label>
             <select id="set-llm"><option value="off">Off (deterministic only)</option></select>
             <p class="note" id="llm-note">Checks slide numbers against Excel locally.</p>
             <div class="provider-fields" id="provider-fields" hidden>
@@ -113,11 +119,18 @@
               <p class="note" id="provider-setup"></p>
               <label for="llm-redact">Terms to redact <span class="note">(optional)</span></label>
               <textarea id="llm-redact" rows="2" maxlength="2000" placeholder="One client, deal or project name per line"></textarea>
-              <label class="check"><input type="checkbox" id="llm-auto"> Use AI during reviews to resolve ambiguous labels</label>
               <button class="btn small" id="test-provider" type="button">Check connection</button>
               <p class="note" id="provider-status" role="status"></p>
             </div>
           </div>
+        </details>
+      </div>
+      <details class="settings" id="settings">
+        <summary>
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          Review settings
+        </summary>
+        <div class="settings-body">
           <div class="field">
             <div class="field-heading"><label for="set-rounding">Rounding</label>
               <button type="button" class="tip-trigger" aria-label="About rounding" aria-describedby="tip-rounding">?</button>
