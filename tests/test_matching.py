@@ -9,7 +9,8 @@ from numcheck.config import Config
 from numcheck.matching.index import ModelIndex
 from numcheck.matching.label_matcher import split_label
 from numcheck.matching.pipeline import match_deck_to_model
-from numcheck.models import DeckNumber, ModelValue, ReviewWarning, SlideInfo, Source
+from numcheck.matching.source_search import review_sources
+from numcheck.models import DeckNumber, Match, ModelValue, ReviewWarning, SlideInfo, Source
 
 
 def mv(row_label, value, *, sheet="Model", addr="B2", col_label="", row=0, col=0, unit="currency", scale="m",
@@ -25,6 +26,32 @@ def dn(label, value, raw, *, unit="currency", scale="m", period="", slide=1, sha
 
 def run(decks, values, cfg=None, **kw):
     return match_deck_to_model(decks, values, cfg or Config(), **kw)
+
+
+def test_source_review_requires_independent_label_scope_and_value_evidence(monkeypatch):
+    def choose_first(entries, config, warnings):
+        return {entry["id"]: "candidate-1" for entry in entries}
+
+    monkeypatch.setattr("numcheck.matching.source_search.resolve_ambiguous", choose_first)
+    config = Config(relative_tolerance=0.1)
+    generic = dn("Revenue", 100, "$100.0m", period="fy24", decimals=1)
+    segment = dn("Aerospace Components Revenue", 100, "$100.0m", period="fy24", decimals=1)
+
+    cases = [
+        (segment, [mv("Revenue", 100, period="fy24", section_label="Aerospace Components")], "matched"),
+        (generic, [mv("Subscription revenue", 100, period="fy24")], "unmatched"),
+        (generic, [mv("Revenue", 105, period="fy24")], "unmatched"),
+        (generic, [mv("Revenue", 100, period="fy24"), mv("Revenue", 110, period="fy24", addr="B3")], "unmatched"),
+    ]
+    for deck, values, expected in cases:
+        matches, _ = review_sources([Match(deck, None, "unmatched")], ModelIndex(values, config),
+                                    config, [], Config(llm="ollama"))
+        match = matches[0]
+        assert match.status == expected and match.source_suggestion
+        if expected == "matched":
+            assert match.method == "source_ai" and match.comparison.ok
+        else:
+            assert match.model is None
 
 
 # --------------------------------------------------------------------------- label parts

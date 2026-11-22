@@ -880,6 +880,7 @@ def match_deck_to_model(
     old_model_values: list[ModelValue] | None = None,
     slides: list[SlideInfo] | None = None,
     warnings: list[ReviewWarning] | None = None,
+    model_index: ModelIndex | None = None,
 ) -> list[Match]:
     """Match every deck number to its model cell; one :class:`Match` per input, in order.
 
@@ -890,8 +891,7 @@ def match_deck_to_model(
     if warnings is None:
         warnings = []
     slide_hint = {s.slide_number: s.period_hint for s in (slides or []) if s.period_hint}
-    vals = [mv for mv in model_values if config.include_hidden or not mv.hidden]
-    index = ModelIndex(vals, config)
+    index = model_index or ModelIndex([mv for mv in model_values if config.include_hidden or not mv.hidden], config)
     live = [i for i, d in enumerate(deck_numbers) if not d.skip_reason]
     dominant = ""
     pc = Counter(deck_numbers[i].period for i in live if deck_numbers[i].period)

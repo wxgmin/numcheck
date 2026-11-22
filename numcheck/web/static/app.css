@@ -324,6 +324,22 @@ button { cursor: pointer; }
 .verdict.is-clean { color: var(--ok); }
 .run-meta { color: var(--ink-2); margin-top: .4rem; display: grid; gap: .125rem; overflow-wrap: anywhere; }
 .review-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.source-review {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .65rem 1rem;
+  padding: .85rem 1rem; border-top: 1px solid var(--line); background: var(--surface-2);
+}
+.source-review h2 { margin-bottom: .15rem; font-size: var(--text-body); }
+.source-review .review-actions > button { min-height: 2.25rem; }
+.source-candidate { display: block; margin-top: .125rem; }
+.ai-source-dialog {
+  width: min(32rem, calc(100% - 2rem)); max-height: calc(100dvh - 2rem);
+  margin: auto; padding: 1rem; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--panel-radius);
+}
+.ai-source-dialog::backdrop { background: var(--scrim); }
+.ai-source-dialog h2 { margin-bottom: .35rem; }
+.ai-source-dialog .review-actions { margin-top: .75rem; justify-content: flex-end; }
+#aiSourceError:not(:empty) { margin-top: .65rem; color: var(--high); }
 .findings-jump { display: none; }
 .review-files { display: flex; flex-wrap: wrap; gap: 1rem 2rem; border-top: 1px solid var(--line); padding: 1rem; }
 .review-files .downloads { gap: .35rem; }

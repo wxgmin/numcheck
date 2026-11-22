@@ -120,11 +120,13 @@ def _issues_sheet(ws: Worksheet, issues: list[Issue]) -> None:
 
 def _coverage_sheet(ws: Worksheet, res: ReviewResult) -> None:
     ws.title = "Coverage"
-    headers = ["Slide", "Deck value", "Label", "Status", "Source cell", "Model value", "Method", "Confidence"]
-    _header(ws, headers, [7, 16, 44, 18, 38, 16, 14, 11])
+    headers = ["Slide", "Deck value", "Label", "Status", "Source cell", "Model value", "Method", "Confidence",
+               "Possible sources", "AI-suggested cell"]
+    _header(ws, headers, [7, 16, 44, 18, 38, 16, 14, 11, 17, 38])
     for r, row in enumerate(match_rows(res), start=2):
         vals = [row["slide_number"], row["raw_text"], row["label"], STATUS_LABELS.get(row["status"], row["status"]),
-                row["source_cell"], row["model_value"], row["method"], row["confidence"]]
+                row["source_cell"], row["model_value"], row["method"], row["confidence"],
+                row["possible_source_count"] or None, row["source_suggestion"]]
         for c, v in enumerate(vals, start=1):
             _put(ws, r, c, v).alignment = _TOP
         fill = _STATUS_FILL.get(row["status"])

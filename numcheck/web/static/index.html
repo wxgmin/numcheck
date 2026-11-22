@@ -77,7 +77,7 @@
         <button type="button" class="tip-trigger" aria-label="How NumCheck checks figures" aria-describedby="tip-how">?</button>
         <span class="tip-text" role="tooltip" id="tip-how">NumCheck reads slide figures and searches Excel using metric labels, periods, units, and layout. It compares the source value at the slide’s displayed precision. Inspect opens the original evidence. A verified figure reconciles to the supplied workbook. NumCheck flags figures it cannot trace. Local review needs no AI account or credits.</span>
       </div>
-      <div class="ai-review">
+      <div class="ai-review" id="setupAiProvider">
         <div class="field-heading">
           <label class="ai-toggle" for="llm-auto">
             <input type="checkbox" id="llm-auto" aria-describedby="ai-review-status">
@@ -86,7 +86,7 @@
           <button type="button" class="tip-trigger" aria-label="What AI adds" aria-describedby="tip-ai">?</button>
           <span class="tip-text" role="tooltip" id="tip-ai">AI can suggest which candidate label best describes a figure. You can also ask on demand from Inspect. Cloud providers receive labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. Requests use the selected provider allowance.</span>
         </div>
-        <p class="note">Helps match ambiguous slide labels to Excel.</p>
+        <p class="note">Suggests Excel sources for unresolved figures during the review.</p>
         <p class="note" id="ai-review-status" role="status">Off by default.</p>
         <details class="settings ai-settings" id="ai-settings">
           <summary>
@@ -156,6 +156,11 @@
             </div>
             <input type="number" id="set-tol" min="0" max="0.1" step="0.001" placeholder="0">
             <p class="note">Relative, as a fraction (0.005 is 0.5%). Maximum 0.1.</p>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="source-search-auto" checked>
+            <div><label for="source-search-auto">Search for possible sources automatically</label>
+            <span class="note">Searches the current Excel files locally for every unresolved figure.</span></div>
           </div>
           <div class="check">
             <input type="checkbox" id="set-require-label" checked>
@@ -230,6 +235,16 @@
           </div>
         </div>
         <div class="kpis" id="kpis"></div>
+        <section class="source-review" id="sourceReview" aria-labelledby="sourceReviewTitle" hidden>
+          <div>
+            <h2 id="sourceReviewTitle">Find sources across the review</h2>
+            <p class="note" id="sourceReviewStatus" role="status"></p>
+          </div>
+          <div class="review-actions">
+            <button type="button" class="btn small" id="findAllSources">Find possible sources for all</button>
+            <button type="button" class="btn small inspect-btn" id="askAllSources" title="Uses your AI provider to compare masked labels and periods">Ask AI for sources</button>
+          </div>
+        </section>
         <div class="review-files">
           <div>
             <h2>Export the review</h2>
@@ -363,6 +378,17 @@
       </div>
       <div class="evidence-preview-body" id="workbookPreview" aria-live="polite"></div>
     </section>
+  </div>
+</dialog>
+
+<dialog class="ai-source-dialog" id="aiSourceDialog" aria-labelledby="aiSourceTitle">
+  <h2 id="aiSourceTitle">AI source suggestions</h2>
+  <p class="note">Cloud providers receive masked labels and period names. Workbooks and cell values stay local.</p>
+  <div id="aiProviderMount"></div>
+  <p class="note" id="aiSourceError" role="status"></p>
+  <div class="review-actions">
+    <form method="dialog"><button type="submit" class="btn small">Cancel</button></form>
+    <button type="button" class="btn small primary" id="runAISourceReview">Ask AI for sources</button>
   </div>
 </dialog>
 

@@ -209,6 +209,8 @@ class Match:
     comparison: Any = None        # numcheck.matching.normalizer.Comparison
     old_model: ModelValue | None = None   # staleness: corresponding cell in previous model
     note: str = ""
+    source_options: list[tuple[ModelValue, str]] | None = field(default=None, repr=False)
+    source_suggestion: str = ""
 
 
 @dataclass
@@ -272,6 +274,8 @@ class ReviewResult:
     files: dict[str, str] = field(default_factory=dict)    # {"html": path, "xlsx": ..., "json": ..., "deck": ...}
     inputs: dict[str, Any] = field(default_factory=dict)   # {"deck": name, "models": [...], "model_old": name}
     settings: dict[str, Any] = field(default_factory=dict) # effective config summary (no secrets)
+    source_review: dict[str, int] = field(default_factory=dict)
+    extraction: DeckExtraction | None = field(default=None, repr=False)
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)

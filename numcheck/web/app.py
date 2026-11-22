@@ -36,10 +36,10 @@ from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
 from numcheck.llm.factory import PROVIDERS, default_model, resolve_ambiguous
 from numcheck.matching.index import ModelIndex
 from numcheck.matching.normalizer import compare
+from numcheck.matching.source_search import UNRESOLVED, possible_sources, suggest_sources
 from numcheck.models import ModelValue, NumCheckInputError, ReviewResult, ReviewWarning
 from numcheck.report import MATCH_ROW_CAP, result_to_dict
 from numcheck.web.evidence import PreviewUnavailable, slide_preview, workbook_preview
-from numcheck.web.source_search import possible_sources, suggest_source
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +102,8 @@ class Job:
     source_index: ModelIndex | None = field(default=None, repr=False)
     source_options: dict[str, list[tuple[ModelValue, str]]] = field(default_factory=dict, repr=False)
     source_lock: Any = field(default_factory=threading.Lock, repr=False)
+    source_review: dict[str, Any] = field(default_factory=dict)
+    next_issue_id: int = 1
     slide_previews: dict[tuple, dict] = field(default_factory=dict, repr=False)
     preview_lock: Any = field(default_factory=threading.Lock, repr=False)
 
@@ -142,6 +144,9 @@ class JobManager:
 
     def purge(self, job_id: str) -> bool:
         with self.lock:
+            current = self.jobs.get(job_id)
+            if current and current.source_review.get("status") in ("queued", "running"):
+                return False
             job = self.jobs.pop(job_id, None)
         if job is None:
             return False
@@ -189,10 +194,12 @@ class JobManager:
                 out_dir=str(job.dir / "report"), annotate=bool(job.settings.get("annotate", True)),
                 config=job.cfg, ocr=bool(job.settings.get("ocr", False)), progress=progress,
                 input_names=getattr(job, "names", None) or None,
+                source_search=bool(job.settings.get("source_search")),
             )
             payload = build_payload(job, result)
             self.update(job, result=result, payload=payload, status="done", stage="done", progress=1.0,
-                        message="Review complete", finished=time.time())
+                        message="Review complete", finished=time.time(),
+                        next_issue_id=max((issue.id for issue in result.issues), default=0) + 1)
         except NumCheckInputError as exc:
             self.update(job, status="error", finished=time.time(), message=str(exc),
                         error={"message": str(exc), "hint": exc.hint, "file": exc.file})
@@ -203,6 +210,51 @@ class JobManager:
         finally:
             if job.cfg is not None:
                 job.cfg.llm_api_key = ""
+
+    def source_index(self, job: Job) -> ModelIndex:
+        from numcheck.runner import build_source_index
+
+        with job.source_lock:
+            if job.source_index is None:
+                cfg = job.cfg or Config()
+                values = [value for path in job.paths["models"] for value in extract_model_full(path, cfg).values]
+                job.source_index = build_source_index(values, cfg)
+            return job.source_index
+
+    def submit_source_review(self, job: Job, ai_cfg: Config | None) -> None:
+        with self.lock:
+            if job.id not in self.jobs:
+                raise RequestError("Job not found. It may have expired.", 404)
+            if job.source_review.get("status") in ("queued", "running"):
+                raise RequestError("A source review is already running.", 409)
+            job.source_review = {"status": "queued"}
+            self.executor.submit(self.execute_source_review, job, ai_cfg)
+
+    def execute_source_review(self, job: Job, ai_cfg: Config | None) -> None:
+        from numcheck.runner import refine_sources
+
+        self.update(job, source_review={"status": "running"})
+        report_dir = None
+        try:
+            index = self.source_index(job)
+            report_dir = tempfile.mkdtemp(prefix="source-report-", dir=job.dir)
+            result, next_id, warnings = refine_sources(
+                job.result, index, job.cfg or Config(), ai_cfg, job.paths["deck"],
+                report_dir, bool(job.settings.get("annotate", True)), job.next_issue_id,
+            )
+            state = {"status": "done", "summary": result.source_review,
+                     "warning": warnings[0].message if warnings else ""}
+            self.update(job, result=result, payload=build_payload(job, result),
+                        source_review=state, next_issue_id=next_id, last_access=time.time())
+        except Exception:
+            if report_dir is not None:
+                shutil.rmtree(report_dir, ignore_errors=True)
+            log.exception("Source review failed for job %s", job.id)
+            self.update(job, source_review={"status": "error",
+                                            "message": "Source review failed. Your previous results are still available."})
+        finally:
+            if ai_cfg is not None:
+                ai_cfg.llm_api_key = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -217,9 +269,6 @@ def _download_path(job: Job, name: str) -> Path | None:
     """Resolve a whitelisted download to a file inside the job directory."""
     if name not in DOWNLOADS:
         return None
-    candidate = job.dir / "report" / name
-    if candidate.is_file():
-        return candidate
     key = DOWNLOADS[name][0]
     recorded = (job.result.files if job.result else {}).get(key)
     if recorded:
@@ -229,6 +278,11 @@ def _download_path(job: Job, name: str) -> Path | None:
                 return p
         except OSError:
             return None
+    if job.result and job.result.source_review:
+        return None
+    candidate = job.dir / "report" / name
+    if candidate.is_file():
+        return candidate
     return None
 
 
@@ -342,6 +396,7 @@ def apply_form_overrides(cfg: Config, form, chatgpt: ChatGPTConnection | None = 
     cfg.require_label_evidence = _truthy(form.get("require_label_evidence"), cfg.require_label_evidence)
     return {"llm": llm, "tolerance": tol, "rounding_mode": mode, "base_period": base,
             "annotate": annotate, "ocr": ocr, "require_label_evidence": cfg.require_label_evidence,
+            "source_search": _truthy(form.get("source_search"), False),
             "llm_model": default_model(llm, cfg)}
 
 
@@ -706,20 +761,33 @@ def create_app(config_path: str | None = None) -> Flask:
             result["message"] = "This slide could not be rendered. Open the original PowerPoint."
         return jsonify(result)
 
+    @app.route("/api/jobs/<job_id>/evidence/source-review", methods=["GET", "POST"])
+    def source_review(job_id: str):
+        job = find_job(job_id)
+        if request.method == "GET":
+            return jsonify(job.source_review)
+        if job.status != "done" or job.result is None or job.result.extraction is None:
+            raise RequestError("The review is unavailable for source discovery.", 409)
+        ai_cfg = None
+        if request.form.get("llm", "off") != "off":
+            ai_cfg = _load_cfg(config_path)
+            apply_provider_overrides(ai_cfg, request.form, local_connection())
+        mgr.submit_source_review(job, ai_cfg)
+        return jsonify({"status": "queued"}), 202
+
     @app.post("/api/jobs/<job_id>/evidence/sources")
     def evidence_sources(job_id: str):
         job = find_job(job_id)
         _, match = get_evidence(job)
-        if match is None or match.status not in ("unmatched", "ambiguous", "matched_value_only"):
+        if match is None or match.status not in UNRESOLVED:
             raise RequestError("Source discovery is available for unresolved figures.", 422)
-        cfg = job.cfg or Config()
+        index = mgr.source_index(job) if match.source_options is None else None
         with job.source_lock:
-            if job.source_index is None:
-                values = [value for path in job.paths["models"] for value in extract_model_full(path, cfg).values]
-                job.source_index = ModelIndex(values, cfg)
-            candidates = job.source_options.get(match.deck.uid)
+            candidates = match.source_options
             if candidates is None:
-                candidates = possible_sources(match.deck, job.source_index)
+                candidates = job.source_options.get(match.deck.uid)
+            if candidates is None and index is not None:
+                candidates = possible_sources(match.deck, index)
                 job.source_options[match.deck.uid] = candidates
         recommendation = ""
         message = ""
@@ -727,7 +795,7 @@ def create_app(config_path: str | None = None) -> Flask:
             ai_cfg = _load_cfg(config_path)
             apply_provider_overrides(ai_cfg, request.form, local_connection())
             warnings: list[ReviewWarning] = []
-            recommendation = suggest_source(match.deck, candidates, ai_cfg, warnings)
+            recommendation = suggest_sources([("0", match.deck, candidates)], ai_cfg, warnings).get("0", "")
             message = warnings[0].message if warnings else ("" if recommendation else "AI did not select a source.")
         return jsonify({"count": len(candidates), "recommended": recommendation, "message": message})
 
@@ -735,17 +803,24 @@ def create_app(config_path: str | None = None) -> Flask:
     def evidence_workbook(job_id: str):
         job = find_job(job_id)
         issue, match = get_evidence(job)
-        source = issue.source_cell if issue is not None else (match.model.ref if match.model else "")
+        source = ((issue.source_cell if issue is not None else "")
+                  or (match.model.ref if match is not None and match.model else ""))
         options = []
         if match is not None:
-            discovered = [value for value, _ in job.source_options.get(match.deck.uid, [])]
+            cached = match.source_options if match.source_options is not None else job.source_options.get(match.deck.uid)
+            discovered = [value for value, _ in cached or ()]
             options = list({m.ref: m for m in [match.model, *match.candidates, match.old_model, *discovered]
                             if m is not None}.values())
+            if match.status in UNRESOLVED:
+                source = match.source_suggestion or source or (discovered[0].ref if discovered else "")
         selection = request.args.get("cell")
         selected = next((m for m in options if m.ref == (selection or source)), None)
         workbooks = {path.name: (slot, path, name) for slot, path, name in originals(job) if slot != "deck"}
         discovered_refs = {value.ref for value in discovered} if match is not None else set()
-        result = {"can_discover": match is not None and match.status in ("unmatched", "ambiguous", "matched_value_only"),
+        result = {"can_discover": match is not None and match.status in UNRESOLVED,
+                  "source_search_done": match is not None and cached is not None,
+                  "source_suggestion": match.source_suggestion if match is not None else "",
+                  "possible_count": len(discovered_refs),
                   "sources": [
             {"ref": m.ref, "label": f"{workbooks[m.workbook][2]} · {m.sheet_name}!{m.cell_address}"
              if m.workbook in workbooks else m.ref,
@@ -761,11 +836,11 @@ def create_app(config_path: str | None = None) -> Flask:
             result["message"] = "The workbook could not be mapped to an original upload."
             return jsonify(result)
         slot, path, name = workbook
-        if selected.ref in discovered_refs:
+        if selected.ref in discovered_refs and match.status in UNRESOLVED:
             comparison = compare(match.deck, selected, job.cfg or Config())
             result["candidate_check"] = (
-                "Value reconciles at the slide’s precision." if comparison and comparison.ok else
-                "Value differs at the slide’s precision." if comparison else "These values could not be compared.")
+                "Value reconciles with the review’s tolerance. The source remains unverified." if comparison and comparison.ok else
+                "The value differs from the slide." if comparison else "These values could not be compared.")
         result.update({"file": name, "slot": slot, "download": f"/api/jobs/{job.id}/original/{slot}"})
         try:
             result.update(workbook_preview(path, selected, top=request.args.get("row", type=int),
@@ -795,7 +870,8 @@ def create_app(config_path: str | None = None) -> Flask:
             raise RequestError("The review is still running.", 409)
         if job.future is not None:
             job.future.cancel()
-        mgr.purge(job_id)
+        if not mgr.purge(job_id):
+            raise RequestError("A source review is still running.", 409)
         return jsonify({"ok": True})
 
     return app

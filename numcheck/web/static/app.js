@@ -35,7 +35,8 @@
     chatGPTConnected: false,
     files: { deck: [], models: [], old: [] },
     jobId: null, polling: null, running: false,
-    data: null, issues: [], matches: [],
+    data: null, issues: [], matches: [], matchByUid: new Map(),
+    sourceBusy: false,
     sort: { key: "sev", dir: 1 },
     sev: {}, type: {}, search: "", slide: "", reviewFilter: "",
     visible: [], selectedId: null, drawerId: null, lastFocus: null,
@@ -172,7 +173,6 @@
     $("chatgpt-connect").hidden = id !== "chatgpt";
     $("llm-model").hidden = id === "chatgpt";
     $("llm-model-label").hidden = id === "chatgpt";
-    if (id === "chatgpt") refreshChatGPT(true);
     $("llm-key-field").hidden = !needsKey;
     $("llm-key").value = "";
     $("llm-model").value = provider ? provider.model : "";
@@ -200,6 +200,7 @@
     if (id === "chatgpt") setup.textContent = "Uses your eligible ChatGPT plan for label matching. NumCheck saves your connection on this computer and renews it when needed.";
     if (links[id]) setup.appendChild(el("a", { href: links[id][1], target: "_blank", rel: "noopener", text: links[id][0] }));
     paintAIReviewStatus();
+    if (id === "chatgpt") return refreshChatGPT(true);
   }
 
   function paintAIReviewStatus() {
@@ -376,6 +377,7 @@
     fd.append("require_label_evidence", String($("set-require-label").checked));
     fd.append("annotate", $("set-annotate").checked ? "true" : "false");
     fd.append("ocr", $("set-ocr").checked && !$("set-ocr").disabled ? "true" : "false");
+    fd.append("source_search", String($("source-search-auto").checked));
     return fd;
   }
   function preflight() {
@@ -493,15 +495,18 @@
   function saveReviews() { store("set", reviewKey(), JSON.stringify(S.reviews)); }
   function reviewOf(id) { return S.reviews[id] || { status: "open", note: "" }; }
 
-  function setResult(data) {
+  function setResult(data, preserve) {
     S.data = data;
     S.issues = (data.issues || []).slice();
     S.matches = data.matches || [];
-    S.sev = {}; S.type = {}; S.search = ""; S.slide = ""; S.reviewFilter = "";
-    S.covStatus = {}; S.covSearch = ""; S.covLimit = COV_PAGE;
-    S.selectedId = null; S.tab = "issues";
-    $("issueSearch").value = ""; $("covSearch").value = ""; $("statusFilter").value = "";
-    loadReviews();
+    S.matchByUid = new Map(S.matches.map(function (match) { return [match.deck_uid, match]; }));
+    if (!preserve) {
+      S.sev = {}; S.type = {}; S.search = ""; S.slide = ""; S.reviewFilter = "";
+      S.covStatus = {}; S.covSearch = ""; S.covLimit = COV_PAGE;
+      S.selectedId = null; S.tab = "issues";
+      $("issueSearch").value = ""; $("covSearch").value = ""; $("statusFilter").value = "";
+      loadReviews();
+    }
     showView("results");
     renderSummary();
     renderWarnings();
@@ -511,8 +516,16 @@
     renderSlides();
     buildCoverageControls();
     renderCoverage();
-    selectTab("issues", false);
+    selectTab(S.tab, false);
     setStatus("done", "Review complete");
+    renderSourceReview();
+    if (preserve) {
+      if (S.drawerId !== null) {
+        if (issueById(S.drawerId)) fillDrawer(S.drawerId);
+        else closeDrawer();
+      }
+      return;
+    }
     $("view").focus();
     var job = S.jobId, first = S.visible[0];
     if (first && S.meta && S.meta.slide_preview) {
@@ -521,6 +534,88 @@
           api("GET", "/api/jobs/" + job + "/evidence/slide?issue=" + first.id).catch(function () {});
         }
       }, 150);
+    }
+  }
+
+  function renderSourceReview(message) {
+    var cov = S.data.coverage || {}, summary = S.data.source_review || {};
+    var remaining = (cov.unmatched || 0) + (cov.ambiguous || 0) + (cov.matched_value_only || 0);
+    $("sourceReview").hidden = !remaining && !summary.searched;
+    $("findAllSources").disabled = S.sourceBusy || !remaining || !!summary.searched;
+    $("findAllSources").textContent = summary.searched ? "Local source search complete" : "Find possible sources for all";
+    $("askAllSources").disabled = S.sourceBusy || !remaining;
+    $("runAISourceReview").disabled = S.sourceBusy || !remaining;
+    $("newReviewBtn").disabled = S.sourceBusy;
+    var counts = summary.searched === undefined ? "" :
+      "Searched " + summary.searched + " · " + summary.with_candidates + " with candidates · " +
+      summary.verified + " newly verified · " + summary.suggested + " AI suggestions. ";
+    $("sourceReviewStatus").textContent = message || (counts + plural(remaining, "unresolved figure") + ".");
+  }
+
+  function showAIProvider(error) {
+    var dialog = $("aiSourceDialog"), settings = $("ai-settings");
+    $("aiSourceError").textContent = error || "";
+    if (!dialog.open) {
+      $("aiProviderMount").appendChild(settings);
+      settings.open = true;
+      dialog.showModal();
+      $("set-llm").focus();
+    }
+  }
+
+  async function askAllSources() {
+    if (S.sourceBusy) return;
+    if ($("set-llm").value === "off" && S.chatGPTConnected) {
+      S.sourceBusy = true;
+      renderSourceReview("Loading models from your connected ChatGPT account…");
+      $("set-llm").value = "chatgpt";
+      await paintLlmNote();
+      S.sourceBusy = false;
+      renderSourceReview();
+    }
+    var provider = $("set-llm").value;
+    if (!provider || provider === "off" || (provider === "chatgpt" && !$("chatgpt-model").value)) {
+      showAIProvider($("aiSourceDialog").open ? "Choose a provider and model before asking AI." : "");
+      return;
+    }
+    runSourceReview(true);
+  }
+
+  async function runSourceReview(useAI) {
+    if (S.sourceBusy) return;
+    var base = "/api/jobs/" + S.jobId, route = base + "/evidence/source-review";
+    var form = new FormData();
+    if (useAI) appendProviderSettings(form);
+    var dialog = $("aiSourceDialog");
+    S.sourceBusy = true;
+    renderSourceReview(useAI ? "Searching the workbooks and asking AI to compare candidate labels…" :
+      "Searching the current Excel files for every unresolved figure…");
+    var message = "";
+    try {
+      try {
+        await api("POST", route, form);
+      } catch (err) {
+        if (err.status !== 409) throw err;
+      }
+      if (dialog.open) dialog.close();
+      while (true) {
+        var progress = await api("GET", route);
+        if (progress.status === "done") {
+          setResult(await api("GET", base + "/result"), true);
+          if (progress.warning) message = $("sourceReviewStatus").textContent + " " + progress.warning;
+          break;
+        }
+        if (progress.status === "error" || !progress.status) {
+          throw new Error(progress.message || "The source review could not start.");
+        }
+        await new Promise(function (resolve) { setTimeout(resolve, POLL_MS); });
+      }
+    } catch (err) {
+      message = err.message;
+      if (useAI && err.status === 422) showAIProvider(err.message);
+    } finally {
+      S.sourceBusy = false;
+      renderSourceReview(message);
     }
   }
 
@@ -649,6 +744,7 @@
       sc.appendChild(chip(s.charAt(0).toUpperCase() + s.slice(1), counts[s] || 0, !!S.sev[s], function () { toggleSev(s); }, String(idx + 1)));
     });
     var tc = clear($("typeChips"));
+    Object.keys(S.type).forEach(function (type) { if (!types[type]) delete S.type[type]; });
     Object.keys(types).sort(function (a, b) { return types[b] - types[a]; }).forEach(function (t) {
       tc.appendChild(chip(typeLabel(t), types[t], !!S.type[t], function () {
         if (S.type[t]) delete S.type[t]; else S.type[t] = true;
@@ -664,6 +760,7 @@
     Object.keys(slides).map(Number).sort(function (a, b) { return a - b; }).forEach(function (n) {
       sf.appendChild(el("option", { value: String(n), text: "Slide " + n + (titles[n] ? " · " + titles[n] : "") }));
     });
+    if (cur && !slides[cur]) S.slide = cur = "";
     sf.value = cur;
   }
   function toggleSev(s) {
@@ -735,13 +832,14 @@
     $("issueCount").textContent = list.length === S.issues.length ? plural(list.length, "issue")
       : list.length + " of " + plural(S.issues.length, "issue");
     if (!list.length) {
-      var msg = S.issues.length ? "No issues match the current filters." : "No issues. Every checked number reconciles.";
+      var msg = S.issues.length ? "No issues match the current filters." : "No findings were flagged. See Coverage for verification status.";
       body.appendChild(el("tr", { role: "row" }, [el("td", { role: "cell", colspan: COLUMNS.length, class: "table-empty", text: msg })]));
       return;
     }
     list.forEach(function (i) {
       var rv = reviewOf(i.id);
       var reviewed = rv.status !== "open";
+      var match = S.matchByUid.get(i.deck_uid);
       var tr = el("tr", { "data-id": i.id, role: "row", class: (i.id === S.selectedId ? "is-selected " : "") + (reviewed ? "is-reviewed" : ""),
         on: { click: function () { S.selectedId = i.id; openDrawer(i.id); } } }, [
         el("td", { role: "cell" }, [sevBadge(i.severity)]),
@@ -759,7 +857,10 @@
           [i.expected_value && i.source_cell ? evidenceButton(i.expected_value, i.source_cell, { issue: i.id }) : (i.expected_value || "—")]),
         el("td", { role: "cell", class: "issue-inspect" },
           [evidenceButton("Inspect", "issue " + i.id + " sources", { issue: i.id }, true)]),
-        el("td", { role: "cell", class: "mono source-cell", text: i.source_cell || "—", title: i.source_cell })
+        el("td", { role: "cell", class: "source-cell", title: i.source_cell }, [
+          i.source_cell ? el("span", { class: "mono", text: i.source_cell }) : "—",
+          match && sourceDiscoveryLabel(match)
+        ])
       ]);
       body.appendChild(tr);
     });
@@ -823,6 +924,7 @@
     S.matches.forEach(function (m) { counts[m.status] = (counts[m.status] || 0) + 1; });
     $("cnt-coverage").textContent = S.matches.length ? String(S.matches.length) : "";
     var host = clear($("statusChips"));
+    Object.keys(S.covStatus).forEach(function (status) { if (!counts[status]) delete S.covStatus[status]; });
     ["matched", "matched_value_only", "mismatch", "stale", "ambiguous", "unmatched"].forEach(function (st) {
       if (!counts[st]) return;
       host.appendChild(chip(STATUS_LABELS[st], counts[st], !!S.covStatus[st], function () {
@@ -835,7 +937,7 @@
     var on = Object.keys(S.covStatus).length, q = S.covSearch.trim().toLowerCase();
     var rows = S.matches.filter(function (m) {
       if (on && !S.covStatus[m.status]) return false;
-      if (q && [m.raw_text, m.label, m.source_cell, m.model_value].join(" ").toLowerCase().indexOf(q) < 0) return false;
+      if (q && [m.raw_text, m.label, m.source_cell, m.source_suggestion, m.model_value].join(" ").toLowerCase().indexOf(q) < 0) return false;
       return m.status !== "skipped";
     });
     var body = clear($("covBody"));
@@ -848,7 +950,9 @@
           { figure: m.deck_uid }, true) : "—"]),
         el("td", { class: "clip", text: m.label, title: m.label }),
         el("td", null, [statusPill(m.status)]),
-        el("td", { class: "mono clip", text: m.source_cell, title: m.source_cell }),
+        el("td", { class: "clip", title: m.source_cell }, [
+          el("span", { class: "mono", text: m.source_cell }), sourceDiscoveryLabel(m)
+        ]),
         el("td", { class: "r mono", text: m.model_value }),
         el("td", { text: (m.method || "").replace(/_/g, " ") }),
         el("td", { class: "r mono", text: m.confidence === null || m.confidence === undefined ? "" : Math.round(m.confidence * 100) + "%" })
@@ -861,6 +965,14 @@
     more.textContent = "Show " + Math.min(COV_PAGE, rows.length - S.covLimit) + " more";
     $("covNote").textContent = S.data.matches_truncated
       ? "Showing the first " + S.matches.length + " of " + S.data.matches_total + " numbers. The Excel report lists all of them." : "";
+  }
+
+  function sourceDiscoveryLabel(match) {
+    if (["unmatched", "ambiguous", "matched_value_only"].indexOf(match.status) < 0) return null;
+    if (match.source_suggestion) return el("span", { class: "note source-candidate",
+      title: match.source_suggestion, text: "AI suggests " + match.source_suggestion.replace(/^\[[^\]]*\]\s*/, "") });
+    return match.possible_source_count ? el("span", { class: "note source-candidate",
+      text: plural(match.possible_source_count, "possible source") }) : null;
   }
 
   // -------------------------------------------------------------- source preview
@@ -887,7 +999,8 @@
       select.appendChild(el("option", { value: "", text: "Choose a source", disabled: true }));
       data.sources.forEach(function (source) {
         select.appendChild(el("option", { value: source.ref,
-          text: (source.prior ? "Prior model · " : source.possible ? "Possible source · " : "") +
+          text: (source.prior ? "Prior model · " : source.ref === data.source_suggestion ? "AI suggestion · " :
+            (source.possible && data.can_discover ? "Possible source · " : "")) +
             (source.label || source.ref) + (source.possible && source.metric ? " · " + source.metric : "") }));
       });
       select.value = selected ? selected.ref : "";
@@ -990,6 +1103,7 @@
     }
     var aiConfigured = $("set-llm").value !== "off";
     tools.hidden = true;
+    find.hidden = false;
     find.disabled = ask.disabled = false;
     ask.hidden = true;
     discovery.textContent = "";
@@ -1043,6 +1157,13 @@
         if (run === previewSequence && index === requestIndex) {
           var focused = workbook.contains(document.activeElement), move = document.activeElement.dataset.move;
           tools.hidden = !data.can_discover;
+          if (data.can_discover && data.source_search_done && !discovery.textContent) {
+            find.hidden = true;
+            ask.hidden = !aiConfigured || !data.possible_count;
+            discovery.textContent = data.source_suggestion ? "AI suggested this source. Inspect the workbook evidence to confirm it."
+              : data.possible_count ? "Found " + plural(data.possible_count, "possible source") + "."
+                : "No additional compatible sources were found.";
+          }
           paintWorkbook(workbook, data, loadCell, issueId);
           if (focused) {
             var next = move ? workbook.querySelector('[data-move="' + move + '"]:not(:disabled)') ||
@@ -1336,6 +1457,12 @@
       showView("empty");
       setStatus("idle", "Ready");
       $("in-deck").focus();
+    });
+    $("findAllSources").addEventListener("click", function () { runSourceReview(false); });
+    $("askAllSources").addEventListener("click", askAllSources);
+    $("runAISourceReview").addEventListener("click", askAllSources);
+    $("aiSourceDialog").addEventListener("close", function () {
+      $("setupAiProvider").appendChild($("ai-settings"));
     });
     $("llm-auto").addEventListener("change", function () {
       if ($("llm-auto").checked && $("set-llm").value === "off") {

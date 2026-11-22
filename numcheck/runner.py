@@ -12,6 +12,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from numcheck.checks import IssueCollector, run_checks
@@ -20,7 +21,9 @@ from numcheck.checks.issues import build_issues, finalize_issues
 from numcheck.config import Config, load_config
 from numcheck.extraction.pptx_extractor import extract_deck_full
 from numcheck.extraction.xlsx_extractor import extract_model_full
+from numcheck.matching.index import ModelIndex
 from numcheck.matching.pipeline import match_deck_to_model
+from numcheck.matching.source_search import review_sources
 from numcheck.models import (
     DeckExtraction,
     ModelExtraction,
@@ -52,6 +55,7 @@ def run_review(
     ocr: bool = False,
     progress: ProgressFn | None = None,
     input_names: dict | None = None,
+    source_search: bool | None = None,
 ) -> ReviewResult:
     """Review *deck_path* against *model_paths* and write all reports to *out_dir*.
 
@@ -105,9 +109,13 @@ def run_review(
         warnings.extend(w for w in old.warnings if w.code != "uncalculated_formulas")
 
     report("match", 0.5, f"Matching {len(deck.numbers)} numbers against {len(model_values):,} cells")
+    match_config = config if source_search is None else replace(config, llm="off")
+    automatic_sources = source_search or (source_search is not None and config.llm != "off")
+    source_index = build_source_index(model_values, config) if automatic_sources else None
     matches = match_deck_to_model(
-        deck.numbers, model_values, config,
+        deck.numbers, model_values, match_config,
         old_model_values=old_values or None, slides=deck.slides, warnings=warnings,
+        model_index=source_index,
     )
 
     for m in matches:
@@ -128,15 +136,14 @@ def run_review(
         if match.deck.source == Source.OCR:
             match.confidence = min(match.confidence, match.deck.confidence)
 
-    report("checks", 0.72, "Running checks")
-    collector = IssueCollector(config)
-    build_issues(matches, config, collector, slides=deck.slides)
-    run_checks(deck.numbers, matches, deck.slides, deck.footnotes, config, collector)
-    issues = finalize_issues(collector.issues, config, slides=deck.slides)
-    _fill_display_text(issues, deck.numbers, config)
+    source_summary = {}
+    if source_index is not None:
+        report("match", 0.65, "Checking possible workbook sources")
+        matches, source_summary = review_sources(matches, source_index, config, warnings,
+                                                 config if config.llm != "off" else None)
 
-    coverage = compute_coverage(matches, deck)
-    _fill_issue_counts(coverage, issues)
+    report("checks", 0.72, "Running checks")
+    issues, coverage = _findings(deck, matches, config)
 
     result = ReviewResult(
         issues=issues,
@@ -149,6 +156,8 @@ def run_review(
         model_values=len(model_values),
         inputs=_inputs(deck_path, model_paths, model_old_path, input_names),
         settings=_settings(config),
+        source_review=source_summary,
+        extraction=deck,
     )
 
     report("reports", 0.85, "Writing reports")
@@ -161,6 +170,50 @@ def run_review(
 
 
 # --------------------------------------------------------------------------- #
+
+
+def build_source_index(values, config: Config) -> ModelIndex:
+    return ModelIndex([value for value in values if config.include_hidden or not value.hidden], config)
+
+
+def _findings(deck, matches, config):
+    collector = IssueCollector(config)
+    build_issues(matches, config, collector, slides=deck.slides)
+    run_checks(deck.numbers, matches, deck.slides, deck.footnotes, config, collector)
+    issues = finalize_issues(collector.issues, config, slides=deck.slides)
+    _fill_display_text(issues, deck.numbers, config)
+    coverage = compute_coverage(matches, deck)
+    _fill_issue_counts(coverage, issues)
+    return issues, coverage
+
+
+def refine_sources(result, index, config, ai_config, deck_path, out_dir, annotate, next_issue_id):
+    """Build a new review snapshot and its exports without mutating the published review."""
+    start = time.time()
+    warnings = []
+    matches, summary = review_sources(result.matches, index, config, warnings, ai_config)
+    issues, coverage = result.issues, result.coverage
+    if summary["verified"]:
+        issues, coverage = _findings(result.extraction, matches, config)
+
+        def identity(issue):
+            return (issue.deck_uid, issue.issue_type, issue.check, issue.slide_number,
+                    issue.shape_id, issue.paragraph_index, issue.char_start, issue.table_row,
+                    issue.table_col, issue.deck_value, issue.metric_key)
+
+        old_ids = {identity(issue): issue.id for issue in result.issues}
+        for issue in issues:
+            previous = old_ids.pop(identity(issue), None)
+            if previous is None:
+                previous = next_issue_id
+                next_issue_id += 1
+            issue.id = previous
+
+    updated = replace(result, matches=matches, issues=issues, coverage=coverage, source_review=summary,
+                      warnings=_dedupe_warnings([*result.warnings, *warnings]), files={},
+                      elapsed=result.elapsed + time.time() - start)
+    _write_reports(updated, deck_path, out_dir, annotate)
+    return updated, next_issue_id, warnings
 
 
 def _progress(fn: ProgressFn | None) -> ProgressFn:

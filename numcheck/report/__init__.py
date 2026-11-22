@@ -141,6 +141,8 @@ def match_to_row(m: Match) -> dict[str, Any]:
         "shape_id": d.shape_id,
         "period": d.period,
         "note": m.note,
+        "possible_source_count": len(m.source_options or ()),
+        "source_suggestion": m.source_suggestion,
     }
 
 
@@ -160,6 +162,7 @@ def result_to_dict(result: ReviewResult, match_cap: int | None = None) -> dict[s
         "settings": clean(result.settings),
         "summary": summarize(result.issues),
         "coverage": clean(result.coverage),
+        "source_review": clean(result.source_review),
         "warnings": [warning_to_dict(w) for w in result.warnings],
         "slides": [clean(s) for s in result.slides],
         "issues": issues,

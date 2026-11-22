@@ -109,11 +109,16 @@ source-driven review, enable **Require label evidence** to leave numeric
 coincidences unresolved. Review the Coverage and Warnings tabs before using
 the exported reports.
 
-**Find possible sources** in Inspect searches workbook labels, units, and periods
-locally for unresolved figures. Select an optional provider to ask AI to recommend
-a candidate from that shortlist. Inspect shows the candidate cell and checks the
-value locally. Source confirmations can be included in the review handoff.
-Select the automatic-assistance checkbox to also use AI during reviews.
+NumCheck searches the current workbooks locally for all unresolved figures by
+default. Change **Search for possible sources automatically** in Review settings
+or run **Find possible sources for all** from the results. **Ask AI for sources**
+compares candidate labels across the review. Enable **Use AI during reviews**
+to run that step automatically with your selected provider.
+
+A figure moves to Verified only when its source is distinct, its workbook label
+and period support the match, and the value reconciles at the slide's displayed
+precision. Other suggestions remain available in Inspect. Coverage and report
+downloads update when a source is verified.
 
 Select a provider, enter its model ID and API key if
 needed, then use **Check connection**. The check sends a synthetic label pair

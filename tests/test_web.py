@@ -11,6 +11,7 @@ import pytest
 from openpyxl import Workbook
 from pptx import Presentation
 
+from numcheck.demo import ASSET_DIR, DEMO_FILES
 from numcheck.models import NumCheckInputError
 from numcheck.report.excel_report import write_excel_report
 from numcheck.report.html_report import write_html_report
@@ -362,7 +363,6 @@ def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch, tmp
 def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_path, monkeypatch):
     import hashlib
 
-    from numcheck.demo import ASSET_DIR, DEMO_FILES
     from numcheck.web.evidence import PreviewUnavailable
 
     def missing_renderer(path, directory, location, token, *, exact_text):
@@ -419,7 +419,7 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
         return {"0": "candidate-1"}
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("numcheck.web.source_search.resolve_ambiguous", rank)
+    monkeypatch.setattr("numcheck.matching.source_search.resolve_ambiguous", rank)
     app = create_app()
     with app.test_client() as client:
         job = client.post("/api/demo", headers=HDR).get_json()["job_id"]
@@ -437,6 +437,70 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
         assert workbook.status_code == 200
         assert workbook.get_json()["candidate_check"]
         assert client.get(base + "/result").get_json() == original
+
+
+def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def rank(entries, config, warnings):
+        calls.append(entries)
+        assert all(candidate["ref"].startswith("candidate-")
+                   for entry in entries for candidate in entry["candidates"])
+        assert not any("8.5%" in str(entry) for entry in entries)
+        return {entry["id"]: "candidate-1" for entry in entries}
+
+    monkeypatch.setattr("numcheck.matching.source_search.resolve_ambiguous", rank)
+    with create_app().test_client() as client:
+        job = client.post("/api/demo", headers=HDR).get_json()["job_id"]
+        assert _wait(client, job)["status"] == "done"
+        base = f"/api/jobs/{job}"
+        route = base + "/evidence/source-review"
+
+        def run(form):
+            assert client.post(route, headers=HDR, data=form).status_code == 202
+            for _ in range(300):
+                progress = client.get(route).get_json()
+                if progress["status"] in ("done", "error"):
+                    assert progress["status"] == "done", progress
+                    return client.get(base + "/result").get_json()
+                time.sleep(0.02)
+            raise AssertionError("Source review did not finish.")
+
+        before = client.get(base + "/result").get_json()
+        issue = next(i for i in before["issues"] if i["slide_number"] == 2 and i["deck_value"] == "+12.0%")
+        mismatch = next(i for i in before["issues"] if i["issue_type"] == "mismatch")
+        local = run({})
+        assert not calls
+        assert local["source_review"]["searched"] == sum(before["coverage"][k] for k in
+                                                       ("unmatched", "ambiguous", "matched_value_only"))
+        assert local["coverage"]["verified"] > before["coverage"]["verified"]
+        assert all(i["id"] != issue["id"] for i in local["issues"])
+        assert mismatch in local["issues"]
+        row = next(m for m in local["matches"] if m["deck_uid"] == issue["deck_uid"])
+        assert row["status"] == "matched" and row["source_cell"].endswith("Segments!F15")
+        evidence = client.get(base + "/evidence/workbook", query_string={"figure": row["deck_uid"]}).get_json()
+        assert evidence["address"] == "F15"
+
+        result = run({"llm": "ollama"})
+        assert len(calls) == 1 and len(calls[0]) > 1
+        assert result["source_review"]["suggested"] > 0
+        range_row = next(m for m in result["matches"] if m["raw_text"] == "8.5%" and m["slide_number"] == 9)
+        assert range_row["status"] == "unmatched" and range_row["source_suggestion"]
+        inspected = client.get(base + "/evidence/workbook", query_string={"figure": range_row["deck_uid"]}).get_json()
+        assert inspected["source_suggestion"] == range_row["source_suggestion"]
+        exported = client.get(base + "/download/report.json")
+        assert exported.get_json()["coverage"] == result["coverage"]
+        assert exported.get_json()["issues"] == result["issues"]
+        exported.close()
+
+        deck, model = (ASSET_DIR / DEMO_FILES[key][0] for key in ("deck", "model"))
+        automatic = _post(client, (deck, model), source_search="true", llm="ollama", annotate="false")
+        auto_job = automatic.get_json()["job_id"]
+        assert _wait(client, auto_job)["status"] == "done"
+        auto_result = client.get(f"/api/jobs/{auto_job}/result").get_json()
+        assert len(calls) == 2 and len(calls[1]) > 1
+        assert auto_result["source_review"]["verified"] >= 1
 
 
 def test_security_headers(client):
