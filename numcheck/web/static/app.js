@@ -872,7 +872,7 @@
         el("td", { role: "cell", class: "issue-inspect" },
           [evidenceButton("Inspect", "issue " + i.id + " sources", { issue: i.id }, true)]),
         el("td", { role: "cell", class: "source-cell", title: i.source_cell }, [
-          i.source_cell ? el("span", { class: "mono", text: i.source_cell }) : "—",
+          i.source_cell ? el("span", { class: "mono", text: i.source_cell }) : match && match.best_source ? null : "—",
           match && sourceDiscoveryLabel(match)
         ])
       ]);
@@ -951,7 +951,7 @@
     var on = Object.keys(S.covStatus).length, q = S.covSearch.trim().toLowerCase();
     var rows = S.matches.filter(function (m) {
       if (on && !S.covStatus[m.status]) return false;
-      if (q && [m.raw_text, m.label, m.source_cell, m.source_suggestion, m.model_value].join(" ").toLowerCase().indexOf(q) < 0) return false;
+      if (q && [m.raw_text, m.label, m.source_cell, m.best_source, m.model_value].join(" ").toLowerCase().indexOf(q) < 0) return false;
       return m.status !== "skipped";
     });
     var body = clear($("covBody"));
@@ -983,10 +983,13 @@
 
   function sourceDiscoveryLabel(match) {
     if (["unmatched", "ambiguous", "matched_value_only"].indexOf(match.status) < 0) return null;
-    if (match.source_suggestion) return el("span", { class: "note source-candidate",
-      title: match.source_suggestion, text: "AI suggests " + match.source_suggestion.replace(/^\[[^\]]*\]\s*/, "") });
-    return match.possible_source_count ? el("span", { class: "note source-candidate",
-      text: plural(match.possible_source_count, "possible source") }) : null;
+    if (!match.best_source) return null;
+    var alternatives = Math.max(0, match.possible_source_count - 1);
+    return el("span", { class: "source-candidate", title: match.best_source }, [
+      el("span", { class: "mono", text: match.best_source.replace(/^\[[^\]]*\]\s*/, "") }),
+      el("span", { class: "note source-candidate", text: (match.source_suggestion ? "AI-selected source" : "Best candidate") +
+        (alternatives ? " · " + plural(alternatives, "alternative") : "") })
+    ]);
   }
 
   // -------------------------------------------------------------- source preview
@@ -1186,9 +1189,19 @@
             ask.hidden = !aiConfigured || !data.ai_eligible;
             var recorded = data.sources.find(function (source) { return source.ref === data.ai_source; });
             discovery.textContent = recorded ? "AI recorded " + recorded.label + "."
-              : data.source_suggestion ? "AI suggested this source. Inspect the workbook evidence to confirm it."
-              : data.possible_count ? "Found " + plural(data.possible_count, "possible source") + ". Check the value and label."
+              : data.source_suggestion ? "Showing the AI-selected source."
+              : data.best_source ? "Showing the best workbook candidate."
                 : "No plausible workbook cells were found.";
+          }
+          var findingMatch = S.matchByUid.get(params.figure || (issueById(issueId) || {}).deck_uid);
+          if (findingMatch && data.best_source && (findingMatch.best_source !== data.best_source ||
+              findingMatch.possible_source_count !== data.possible_count ||
+              (data.ai_source && findingMatch.source_suggestion !== data.ai_source))) {
+            findingMatch.best_source = data.best_source;
+            findingMatch.possible_source_count = data.possible_count;
+            if (data.ai_source) findingMatch.source_suggestion = data.ai_source;
+            renderIssues();
+            renderCoverage();
           }
           paintWorkbook(workbook, data, loadCell, issueId);
           if (focused) {
@@ -1279,6 +1292,9 @@
       kvRow("Check", i.check ? i.check.replace(/_/g, " ") : ""), kvRow("Confidence", i.confidence === null || i.confidence === undefined ? "" : Math.round(i.confidence * 100) + "%", true),
       kvRow("Shape", i.shape_id, true)
     );
+    var sourceMatch = S.matchByUid.get(i.deck_uid);
+    if (!rv.aiSource && sourceMatch && sourceMatch.best_source) kv.push.apply(kv,
+      kvRow(sourceMatch.source_suggestion ? "AI-selected source" : "Best candidate", sourceMatch.best_source, true));
     if (rv.aiSource) kv.push.apply(kv, kvRow("AI-selected source",
       rv.aiSource.file + " · " + rv.aiSource.sheet + "!" + rv.aiSource.address, true));
     if (rv.confirmedSource) kv.push.apply(kv, kvRow("Confirmed for handoff",

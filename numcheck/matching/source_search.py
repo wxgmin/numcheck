@@ -177,12 +177,17 @@ def _inspection_sources(deck, index, precise, reconciling):
             ranked.append((score * (1 if consistent else 0.65), not value.hidden, value.sheet_priority or 0, -i))
     # Check the best label leads first. Broader value coincidences cannot displace them.
     leads = []
+    endpoint = {"low": "min", "high": "max"}.get(deck.range_role)
     for score, visible, priority, pos in heapq.nlargest(MAX_CANDIDATES * 3, ranked):
         value = index.values[-pos]
         comparison = source_comparison(deck, value, precise)
         tier = 2 if comparison and comparison.ok and not comparison.inferred else int(bool(comparison and comparison.ok))
-        leads.append((tier, score, visible, priority, pos))
-    for _, _, _, _, pos in heapq.nlargest(MAX_CANDIDATES - len(options), leads):
+        endpoint_matches = bool(endpoint and endpoint in index.stats(-pos))
+        if comparison is not None and not comparison.inferred and not comparison.currency_conflict:
+            # Use proximity only after finding cells with related labels and compatible units.
+            score /= 1 + min(comparison.relative_difference, 1.0)
+        leads.append((endpoint_matches, tier, comparison is not None, score, visible, priority, pos))
+    for _, _, _, _, _, _, pos in heapq.nlargest(MAX_CANDIDATES - len(options), leads):
         value = index.values[-pos]
         options[value.ref] = value, index.periods[-pos]
     return list(options.values())
@@ -220,6 +225,8 @@ def suggest_sources(targets, config, warnings: list[ReviewWarning], *, compariso
         if not candidates:
             continue
         entry = build_entry(entry_id, deck, _source_label(deck), deck.period, candidates)
+        if deck.range_role:
+            entry["range_endpoint"] = deck.range_role
         refs[entry_id] = {}
         for i, candidate in enumerate(entry["candidates"]):
             if comparison_config is not None:

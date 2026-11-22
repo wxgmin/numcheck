@@ -118,7 +118,8 @@ always runs both steps, starting with local source search.
 A figure moves to Verified only when its source is distinct, its workbook label
 and period support the match, and the value reconciles at the slide's displayed
 precision. Inspect also lists related workbook cells and shows how their values
-compare with the slide. **Identify and record source with AI** selects and
+compare with the slide. Results show the best available cell for each figure with
+candidates and Inspect opens it by default. **Identify and record source with AI** selects and
 opens the best-supported cell and records its workbook, sheet and address in
 the finding and review handoff. Other possible cells remain available in
 Inspect. This action can identify a source whose value differs when the label,

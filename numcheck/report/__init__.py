@@ -143,6 +143,8 @@ def match_to_row(m: Match) -> dict[str, Any]:
         "note": m.note,
         "possible_source_count": len(m.source_options or ()),
         "source_suggestion": m.source_suggestion,
+        "best_source": (m.source_suggestion or m.source_options[0][0].ref)
+        if m.status in {"unmatched", "ambiguous", "matched_value_only"} and m.source_options else "",
     }
 
 

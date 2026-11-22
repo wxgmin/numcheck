@@ -828,21 +828,21 @@ def create_app(config_path: str | None = None) -> Flask:
                   or (match.model.ref if match is not None and match.model else ""))
         options = []
         ai_source = ""
-        discovered, eligible, cached = [], [], None
+        discovered, cached = [], None
         unresolved = match is not None and match.status in UNRESOLVED
         cfg = job.cfg or Config()
         if match is not None:
             if match.source_options is not None:
-                cached, eligible = match.source_options, match.source_ai_options
+                cached = match.source_options
             else:
-                cached, eligible = job.source_options.get(match.deck.uid, (None, []))
+                cached, _ = job.source_options.get(match.deck.uid, (None, []))
             discovered = [value for value, _ in cached or ()]
             if unresolved and cached is not None:
                 options = discovered
-                preferred = eligible[0][0].ref if len(eligible) == 1 else ""
                 saved_ref = job.ai_sources.get(match.deck.uid, "")
                 ai_source = saved_ref if any(m.ref == saved_ref for m in options) else ""
-                source = ai_source or match.source_suggestion or preferred or (options[0].ref if len(options) == 1 else "")
+                source = ai_source or match.source_suggestion or (options[0].ref if options else "")
+                options.sort(key=lambda value: value.ref != source)
             else:
                 prior_candidates = [value for value in match.candidates if unresolved or value.ref == source]
                 options = list({m.ref: m for m in [match.model, *prior_candidates, match.old_model]
@@ -868,6 +868,7 @@ def create_app(config_path: str | None = None) -> Flask:
                   "source_search_done": cached is not None,
                   "ai_eligible": unresolved and bool(discovered),
                   "ai_source": ai_source,
+                  "best_source": source if unresolved and discovered else "",
                   "source_suggestion": match.source_suggestion if match is not None else "",
                   "possible_count": len(discovered_refs),
                   "sources": [

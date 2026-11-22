@@ -504,6 +504,8 @@ def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monk
         assert range_row["status"] == "unmatched" and not range_row["source_suggestion"]
         inspected = client.get(base + "/evidence/workbook", query_string={"figure": range_row["deck_uid"]}).get_json()
         assert len(inspected["sources"]) == 4 and inspected["ai_eligible"]
+        assert range_row["best_source"] == inspected["best_source"]
+        assert inspected["sources"][0]["selected"] and inspected["address"] == "C20"
         assert all(cell["display_value"] and cell["comparison"] for cell in inspected["sources"])
         differing = next(cell for cell in inspected["sources"] if cell["comparison"] == "differs")
         selected = client.get(base + "/evidence/workbook", query_string={

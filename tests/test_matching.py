@@ -9,7 +9,7 @@ from numcheck.config import Config
 from numcheck.matching.index import ModelIndex
 from numcheck.matching.label_matcher import split_label
 from numcheck.matching.pipeline import match_deck_to_model
-from numcheck.matching.source_search import review_sources
+from numcheck.matching.source_search import discover_sources, review_sources
 from numcheck.models import DeckNumber, Match, ModelValue, ReviewWarning, SlideInfo, Source
 
 
@@ -61,6 +61,20 @@ def test_source_review_requires_independent_label_scope_and_value_evidence(monke
             assert match.method == "source_ai" and match.comparison.ok
         else:
             assert match.model is None
+
+
+def test_best_source_for_range_endpoint_with_changed_value():
+    config = Config()
+    deck = dn("Adjusted EBITDA", 13.4, "13.4x", unit="multiple", scale="", decimals=1,
+              period="fy24", is_range=True, range_role="high")
+    values = [
+        mv("Adjusted EBITDA", 13.4, unit="multiple", scale="", period="fy24", col_label="Multiple - low"),
+        mv("Adjusted EBITDA", 12.5, unit="multiple", scale="", period="fy24", col_label="Multiple - high", addr="C2"),
+        mv("Adjusted EBITDA", 13.5, unit="multiple", scale="", period="fy24", col_label="Multiple - high", addr="D2"),
+    ]
+    candidates, eligible = discover_sources(deck, ModelIndex(values, config))
+    assert [value.cell_address for value, _ in candidates] == ["D2", "C2", "B2"]
+    assert not eligible
 
 
 # --------------------------------------------------------------------------- label parts
