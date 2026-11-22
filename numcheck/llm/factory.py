@@ -10,6 +10,7 @@ from numcheck.config import Config
 from numcheck.llm.providers import (
     DEFAULT_MODELS,
     AnthropicProvider,
+    ChatGPTProvider,
     CodexProvider,
     JevProvider,
     LLMError,
@@ -18,13 +19,16 @@ from numcheck.llm.providers import (
 )
 from numcheck.models import ReviewWarning
 
-PROVIDERS = ("off", "openai", "anthropic", "openai-compatible", "ollama", "codex", "openrouter", "jev")
+PROVIDERS = ("off", "openai", "anthropic", "openai-compatible", "ollama", "codex", "openrouter", "jev", "chatgpt")
 
 
 def get_provider(config: Config):
     p = (config.llm or "off").strip().lower()
     if p in ("off", "none", ""):
         return NoopProvider()
+
+    if p == "chatgpt":
+        return ChatGPTProvider(config.llm_api_key)
 
     if p == "openai":
         key = config.llm_api_key or os.environ.get("OPENAI_API_KEY", "")
@@ -141,7 +145,7 @@ def resolve_ambiguous(entries: list[dict], config: Config, warnings: list[Review
         return {}
 
     model = default_model(provider.name, config)
-    if provider.name in ("openai-compatible", "openrouter") and not model:
+    if provider.name in ("openai-compatible", "openrouter", "chatgpt") and not model:
         warn(f"LLM disambiguation skipped: provider '{provider.name}' requires llm.model to be set",
              len(entries))
         return {}

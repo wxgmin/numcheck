@@ -43,7 +43,7 @@ class FakeAnthropic:
 
 
 def test_providers_constant_and_selection():
-    assert PROVIDERS == ("off", "openai", "anthropic", "openai-compatible", "ollama", "codex", "openrouter", "jev")
+    assert PROVIDERS == ("off", "openai", "anthropic", "openai-compatible", "ollama", "codex", "openrouter", "jev", "chatgpt")
     assert get_provider(Config(llm="off")).name == "off"
     assert get_provider(Config(llm="anthropic", llm_api_key="k")).name == "anthropic"
     assert get_provider(Config(llm="ollama")).name == "ollama"

@@ -29,6 +29,8 @@ from numcheck import __version__
 from numcheck.config import Config, load_config
 from numcheck.demo import ASSET_DIR, DEMO_FILES, build_demo
 from numcheck.extraction import fileio
+from numcheck.llm.chatgpt import ChatGPTConnection
+from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
 from numcheck.llm.factory import PROVIDERS, default_model, resolve_ambiguous
 from numcheck.models import NumCheckInputError, ReviewResult, ReviewWarning
 from numcheck.report import MATCH_ROW_CAP, result_to_dict
@@ -57,6 +59,7 @@ PROVIDER_LABELS = {
     "openai-compatible": "OpenAI-compatible endpoint",
     "ollama": "Ollama (local)",
     "codex": "ChatGPT via Codex",
+    "chatgpt": "ChatGPT plan",
     "openrouter": "OpenRouter",
     "jev": "Jev via Vercel AI Gateway (experimental)",
 }
@@ -264,7 +267,7 @@ def _load_cfg(config_path: str | None) -> Config:
                            hint="Check numcheck.toml for syntax errors.") from exc
 
 
-def apply_provider_overrides(cfg: Config, form) -> None:
+def apply_provider_overrides(cfg: Config, form, chatgpt: ChatGPTConnection | None = None) -> None:
     provider = (form.get("llm") or cfg.llm or "off").strip()
     if provider not in PROVIDERS:
         raise RequestError("Choose a supported label matching provider.", 422)
@@ -286,6 +289,16 @@ def apply_provider_overrides(cfg: Config, form) -> None:
         cfg.llm_api_key = api_key
     if redactions:
         cfg.llm_redact.extend(term.strip() for term in redactions.splitlines() if term.strip())
+    if provider == "chatgpt":
+        if chatgpt is None:
+            raise RequestError("ChatGPT plan connections are available from the local NumCheck address.", 403)
+        if not cfg.model_name:
+            raise RequestError("Choose a model from your ChatGPT account.", 422)
+        try:
+            cfg.llm_api_key = chatgpt.token()
+        except ChatGPTConnectionError as exc:
+            raise RequestError(str(exc), 422) from exc
+        return
     if provider in ("openrouter", "openai-compatible") and not cfg.model_name:
         raise RequestError("Enter the model ID shown in your provider account.", 422)
     info = next(p for p in provider_info(cfg) if p["id"] == provider)
@@ -293,9 +306,9 @@ def apply_provider_overrides(cfg: Config, form) -> None:
         raise RequestError(info["reason"], 422)
 
 
-def apply_form_overrides(cfg: Config, form) -> dict[str, Any]:
+def apply_form_overrides(cfg: Config, form, chatgpt: ChatGPTConnection | None = None) -> dict[str, Any]:
     """Validate form fields, apply them to *cfg*, and return the effective settings."""
-    apply_provider_overrides(cfg, form)
+    apply_provider_overrides(cfg, form, chatgpt)
     llm = cfg.llm
     raw_tol = (form.get("tolerance") or "").strip()
     tol = cfg.relative_tolerance
@@ -344,7 +357,8 @@ def _suffix(name: str) -> str:
     return Path(name).suffix.lower()
 
 
-def create_job_from_request(mgr: JobManager, config_path: str | None, demo: bool = False) -> Job:
+def create_job_from_request(mgr: JobManager, config_path: str | None, demo: bool = False,
+                            chatgpt: ChatGPTConnection | None = None) -> Job:
     cfg = _load_cfg(config_path)
     job_id, job_dir = mgr.new_dir()
     try:
@@ -355,7 +369,7 @@ def create_job_from_request(mgr: JobManager, config_path: str | None, demo: bool
             cfg.llm, cfg.ocr = "off", False
             job = Job(job_id, job_dir, settings, {}, {}, demo=True, cfg=cfg)
         else:
-            settings = apply_form_overrides(cfg, request.form)
+            settings = apply_form_overrides(cfg, request.form, chatgpt)
             deck = request.files.get("deck")
             models = [m for m in request.files.getlist("models") if m and m.filename]
             if not deck or not deck.filename:
@@ -412,6 +426,7 @@ def provider_info(cfg: Config) -> list[dict[str, Any]]:
         "openrouter": bool(env.get("OPENROUTER_API_KEY")),
         "openai-compatible": bool(cfg.llm_base_url),
         "ollama": True,  # Test the service, since it can run without a CLI on PATH.
+        "chatgpt": False,
         "codex": bool(codex and Path(codex).is_file()),
     }
     reasons = {
@@ -420,6 +435,7 @@ def provider_info(cfg: Config) -> list[dict[str, Any]]:
         "anthropic": "Enter an Anthropic API key.",
         "openrouter": "Enter an OpenRouter API key.",
         "openai-compatible": "Set NUMCHECK_LLM_BASE_URL on the NumCheck server.",
+        "chatgpt": "Connect your ChatGPT account.",
         "codex": "Install the Codex CLI and add it to PATH, then run codex login.",
     }
     if cfg.llm_api_key and cfg.llm in ("openai", "anthropic", "openrouter", "jev"):
@@ -527,10 +543,34 @@ def create_app(config_path: str | None = None) -> Flask:
                          "require_label_evidence": True},
         })
 
+    connection = ChatGPTConnection()
+
+    def local_connection():
+        if request.remote_addr == "127.0.0.1" and request.host.partition(":")[0] == "127.0.0.1":
+            return connection
+        return None
+
+    @app.route("/api/chatgpt/<action>", methods=["GET", "POST"])
+    def chatgpt_connection(action):
+        if local_connection() is None or request.headers.get("X-Requested-With") != "numcheck":
+            raise RequestError("Open NumCheck at its local 127.0.0.1 address to connect ChatGPT.", 403)
+        try:
+            if action == "status" and request.method == "GET":
+                return jsonify(connection.status())
+            if action == "models" and request.method == "GET":
+                return jsonify({"models": connection.models()})
+            if action == "connect" and request.method == "POST":
+                return jsonify({"url": connection.start()})
+            if action == "disconnect" and request.method == "POST":
+                return jsonify(connection.disconnect())
+        except ChatGPTConnectionError as exc:
+            raise RequestError(str(exc), 422) from exc
+        raise RequestError("Unknown ChatGPT connection action.", 404)
+
     @app.post("/api/providers/test")
     def test_provider():
         cfg = _load_cfg(config_path)
-        apply_provider_overrides(cfg, request.form)
+        apply_provider_overrides(cfg, request.form, local_connection())
         if cfg.llm == "off":
             raise RequestError("Select a label matching provider to test.", 422)
         sample = {
@@ -557,7 +597,7 @@ def create_app(config_path: str | None = None) -> Flask:
 
     @app.post("/api/jobs")
     def create_job():
-        job = create_job_from_request(mgr, config_path)
+        job = create_job_from_request(mgr, config_path, chatgpt=local_connection())
         mgr.submit(job)
         return jsonify({"job_id": job.id}), 202
 
@@ -575,7 +615,7 @@ def create_app(config_path: str | None = None) -> Flask:
 
     @app.post("/api/review")
     def review_sync():
-        job = create_job_from_request(mgr, config_path)
+        job = create_job_from_request(mgr, config_path, chatgpt=local_connection())
         mgr.execute(job)
         if job.status == "error" and job.error:
             status = 422 if job.error.get("file") or job.error.get("hint") else 500

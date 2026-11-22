@@ -72,6 +72,7 @@
         <ul class="files" id="files-old"></ul>
       </div>
 
+      <button type="button" class="btn small" id="chatgpt-shortcut">Connect ChatGPT</button>
       <details class="settings" id="settings">
         <summary>
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
@@ -83,7 +84,17 @@
             <select id="set-llm"><option value="off">Off (deterministic only)</option></select>
             <p class="note" id="llm-note">Checks slide numbers against Excel locally.</p>
             <div class="provider-fields" id="provider-fields" hidden>
-              <label for="llm-model">Model ID</label>
+              <label for="llm-model" id="llm-model-label">Model ID</label>
+              <div id="chatgpt-connect" class="field" hidden>
+                <div class="evidence-actions">
+                  <button type="button" class="btn small inspect-btn" id="chatgpt-signin">Continue with ChatGPT</button>
+                  <button type="button" class="btn small" id="chatgpt-disconnect" hidden>Disconnect</button>
+                </div>
+                <p class="note" id="chatgpt-status" role="status"></p>
+                <p class="note" id="chatgpt-recovery"></p>
+                <label for="chatgpt-model">ChatGPT model</label>
+                <select id="chatgpt-model" disabled><option value="">Connect to load models</option></select>
+              </div>
               <input id="llm-model" type="text" maxlength="200" autocomplete="off" spellcheck="false">
               <div class="field" id="llm-key-field" hidden>
                 <label for="llm-key">Provider API key</label>
@@ -93,7 +104,7 @@
               <p class="note" id="provider-setup"></p>
               <label for="llm-redact">Terms to redact <span class="note">(optional)</span></label>
               <textarea id="llm-redact" rows="2" maxlength="2000" placeholder="One client, deal or project name per line"></textarea>
-              <button class="btn small" id="test-provider" type="button">Test connection</button>
+              <button class="btn small" id="test-provider" type="button">Check connection</button>
               <p class="note" id="provider-status" role="status"></p>
             </div>
           </div>

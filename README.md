@@ -111,10 +111,15 @@ the exported reports.
 
 **AI label assistance** is optional and only breaks ties between existing
 source candidates. Select a provider, enter its model ID and API key if
-needed, then use **Test connection**. OpenAI and Anthropic use platform API
+needed, then use **Check connection**. The check sends a synthetic label pair
+and exercises the selected model. OpenAI and Anthropic use platform API
 keys. OpenRouter offers models from multiple vendors. Jev uses a Vercel AI
 Gateway key and can abstain on low-probability choices. Ollama uses a running
-local model. ChatGPT via Codex uses the installed CLI's `codex login`
+local model. **Connect ChatGPT** opens OpenAI authorization for eligible
+ChatGPT plans, then loads the account’s models. The local server keeps the
+connection in memory until you close NumCheck or disconnect. The OAuth
+connection is available at the app's local `127.0.0.1` address.
+ChatGPT via Codex uses the installed CLI's `codex login`
 session (`NUMCHECK_CODEX_BIN` can point to an executable outside PATH).
 The compatible endpoint reads its URL from the server configuration.
 Keys typed into the form are held in the tab and used only for the test or

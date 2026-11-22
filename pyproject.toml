@@ -21,11 +21,11 @@ dependencies = [
 [project.optional-dependencies]
 openai = ["openai>=3.26"]
 anthropic = ["anthropic>=0.40"]
-llm = ["openai>=3.26", "anthropic>=0.40"]
+llm = ["openai>=3.26", "anthropic>=0.40", "PyJWT[crypto]>=2.10.1"]
 ocr = ["pytesseract>=0.3", "pillow>=10", "pymupdf>=1.24"]
 preview = ["pypdfium2>=5.0", "pillow>=10"]
 crypto = ["msoffcrypto-tool>=5.4"]
-all = ["pypdfium2>=5.0", "openai>=3.26", "anthropic>=0.40", "pytesseract>=0.3", "pillow>=10", "pymupdf>=1.24", "msoffcrypto-tool>=5.4"]
+all = ["PyJWT[crypto]>=2.10.1", "pypdfium2>=5.0", "openai>=3.26", "anthropic>=0.40", "pytesseract>=0.3", "pillow>=10", "pymupdf>=1.24", "msoffcrypto-tool>=5.4"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]

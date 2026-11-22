@@ -162,6 +162,35 @@ class OpenAICompatProvider:
         return parse_resolutions(content, entries)
 
 
+class ChatGPTProvider:
+    """Inference through a user-authorized ChatGPT plan."""
+
+    name = "chatgpt"
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def resolve(self, entries: list[dict], model: str, timeout: float = 60.0) -> dict[str, str]:
+        if not self.token or not model:
+            raise LLMError("Connect ChatGPT and select an available model first.", fatal=True)
+        client = _openai_client(self.token, "https://api.openai.com/v1", timeout)
+        parts = []
+        completed = False
+        with client.responses.create(model=model, instructions=SYSTEM_PROMPT,
+                                     input=[{"role": "user", "content": build_payload(entries)}],
+                                     store=False, stream=True) as stream:
+            for event in stream:
+                if event.type == "response.output_text.delta":
+                    parts.append(event.delta)
+                elif event.type == "response.completed":
+                    completed = True
+                elif event.type in ("response.failed", "response.incomplete", "error"):
+                    raise LLMError("ChatGPT could not complete the request. Check plan access and usage limits.", fatal=True)
+        if not completed:
+            raise LLMError("ChatGPT ended the connection before completing the request.")
+        return parse_resolutions("".join(parts), entries)
+
+
 class JevProvider:
     """Typed label choices via Vercel AI Gateway."""
 

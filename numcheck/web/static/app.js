@@ -160,6 +160,7 @@
       $("set-ocr").checked = !!(ocr && d.ocr);
       $("ocr-note").textContent = ocr ? "Slower. Reads numbers inside pictures." : "Unavailable: LibreOffice and Tesseract were not found.";
       paintLlmNote();
+      if (sel.value !== "chatgpt") refreshChatGPT(false);
     }).catch(function () { /* meta is optional; defaults in markup still work */ });
   }
   function paintLlmNote() {
@@ -167,11 +168,15 @@
     var provider = ((S.meta && S.meta.providers) || []).find(function (p) { return p.id === id; });
     var needsKey = ["openai", "anthropic", "openrouter", "openai-compatible", "jev"].indexOf(id) >= 0;
     $("provider-fields").hidden = id === "off";
+    $("chatgpt-connect").hidden = id !== "chatgpt";
+    $("llm-model").hidden = id === "chatgpt";
+    $("llm-model-label").hidden = id === "chatgpt";
+    if (id === "chatgpt") refreshChatGPT(true);
     $("llm-key-field").hidden = !needsKey;
     $("llm-key").value = "";
     $("llm-model").value = provider ? provider.model : "";
     $("llm-model").placeholder = id === "codex" ? "Use Codex default" : "Enter model ID";
-    $("provider-status").textContent = "";
+    $("provider-status").textContent = id === "off" ? "" : "Connection not checked.";
     $("llm-note").textContent = provider && provider.external
       ? "Sends labels, period names, and source identifiers for ambiguous figures. Files and cell values stay local."
       : "Checks slide numbers against Excel locally.";
@@ -188,9 +193,10 @@
     if (id === "jev") setup.textContent = "Uses typed choices. Low-probability answers remain unresolved. ";
     if (id === "codex") setup.textContent = "Uses the Codex CLI sign-in on this computer. Run codex login if needed. ";
     if (id === "ollama") setup.textContent = "Start Ollama and pull the model listed above. ";
-    if (provider && !provider.available && !needsKey && id !== "codex") setup.textContent = provider.reason + " ";
+    if (provider && !provider.available && !needsKey && id !== "codex" && id !== "chatgpt") setup.textContent = provider.reason + " ";
     if (provider && provider.available && needsKey) setup.textContent += "A server credential is configured where required. An entered key overrides it. ";
     if (id === "openai-compatible" && provider && !provider.available) setup.textContent = provider.reason;
+    if (id === "chatgpt") setup.textContent = "Uses your eligible ChatGPT plan for label matching. The connection lasts while NumCheck is running.";
     if (links[id]) setup.appendChild(el("a", { href: links[id][1], target: "_blank", rel: "noopener", text: links[id][0] }));
   }
 
@@ -198,9 +204,57 @@
     var id = $("set-llm").value;
     fd.append("llm", id);
     if (id === "off") return;
-    fd.append("llm_model", $("llm-model").value.trim());
+    fd.append("llm_model", id === "chatgpt" ? $("chatgpt-model").value : $("llm-model").value.trim());
     if (!$("llm-key-field").hidden) fd.append("llm_api_key", $("llm-key").value.trim());
     fd.append("llm_redact", $("llm-redact").value.trim());
+  }
+
+  async function refreshChatGPT(loadModels, polling) {
+    var status = $("chatgpt-status"), picker = $("chatgpt-model"), button = $("chatgpt-signin");
+    try {
+      var state = await api("GET", "/api/chatgpt/status");
+      $("chatgpt-shortcut").textContent = state.connected ? "Manage ChatGPT connection" : "Connect ChatGPT";
+      $("chatgpt-disconnect").hidden = !state.connected;
+      $("chatgpt-disconnect").disabled = state.pending;
+      button.disabled = state.pending;
+      button.textContent = state.connected ? "Connect a different account" : "Continue with ChatGPT";
+      status.textContent = state.pending ? "Finish authorization in your browser."
+        : (state.message || (state.connected ? "Connected as " + state.account + "." : "ChatGPT is disconnected."));
+      if (state.pending) {
+        if (polling) setTimeout(function () { refreshChatGPT(true, true); }, 1000);
+        return;
+      }
+      if (polling) clear($("chatgpt-recovery"));
+      if (loadModels && state.connected) {
+        var previous = picker.value;
+        var result = await api("GET", "/api/chatgpt/models");
+        clear(picker);
+        result.models.forEach(function (model) { picker.appendChild(el("option", { value: model.id, text: model.label })); });
+        if (result.models.some(function (model) { return model.id === previous; })) picker.value = previous;
+        picker.disabled = !result.models.length;
+        if (picker.disabled) picker.appendChild(el("option", { value: "", text: "No eligible models found" }));
+      } else if (!state.connected) {
+        clear(picker).appendChild(el("option", { value: "", text: "Connect to load models" }));
+        picker.disabled = true;
+      }
+    } catch (err) { status.textContent = err.message; }
+  }
+
+  async function connectChatGPT() {
+    var popup = window.open("about:blank", "_blank");
+    if (popup) popup.opener = null;
+    $("chatgpt-signin").disabled = true;
+    try {
+      var result = await api("POST", "/api/chatgpt/connect");
+      if (popup && !popup.closed) popup.location.replace(result.url);
+      else clear($("chatgpt-recovery")).appendChild(el("a", { href: result.url, target: "_blank",
+        rel: "noopener noreferrer", text: "Open ChatGPT authorization" }));
+      await refreshChatGPT(true, true);
+    } catch (err) {
+      if (popup) popup.close();
+      $("chatgpt-status").textContent = err.message;
+      $("chatgpt-signin").disabled = false;
+    }
   }
 
   async function testProvider() {
@@ -1218,8 +1272,23 @@
       $("in-deck").focus();
     });
     $("set-llm").addEventListener("change", paintLlmNote);
+    $("chatgpt-shortcut").addEventListener("click", function () {
+      $("settings").open = true;
+      $("set-llm").value = "chatgpt";
+      paintLlmNote();
+      $("chatgpt-signin").focus();
+    });
+    $("chatgpt-signin").addEventListener("click", connectChatGPT);
+    $("chatgpt-disconnect").addEventListener("click", async function () {
+      try {
+        await api("POST", "/api/chatgpt/disconnect");
+        $("provider-status").textContent = "Connection not checked.";
+        await refreshChatGPT(false);
+      } catch (err) { $("chatgpt-status").textContent = err.message; }
+    });
+    $("chatgpt-model").addEventListener("change", function () { $("provider-status").textContent = "Connection not checked."; });
     $("test-provider").addEventListener("click", testProvider);
-    $("provider-fields").addEventListener("input", function () { $("provider-status").textContent = ""; });
+    $("provider-fields").addEventListener("input", function () { $("provider-status").textContent = "Connection not checked."; });
     $("issueSearch").addEventListener("input", function (e) { S.search = e.target.value; renderIssues(); });
     $("slideFilter").addEventListener("change", function (e) { S.slide = e.target.value; renderIssues(); });
     $("statusFilter").addEventListener("change", function (e) { S.reviewFilter = e.target.value; renderIssues(); });

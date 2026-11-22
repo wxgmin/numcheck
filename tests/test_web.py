@@ -301,6 +301,50 @@ def test_provider_connection_from_form(client, monkeypatch):
     assert client.post("/api/providers/test", data={"llm": "openai"}, headers=HDR).status_code == 422
 
 
+def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch):
+    from urllib.parse import parse_qs, urlencode, urlsplit
+    from urllib.request import urlopen
+
+    from numcheck.llm import chatgpt
+
+    def request(url, *, form=None, token=None):
+        if url == chatgpt.TOKEN_URL:
+            assert form["client_id"] == "issued-client" and form["code"] == "example-code"
+            assert form["code_verifier"] and form["redirect_uri"] == redirect
+            return {"id_token": "signed-id", "access_token": "private-access", "refresh_token": "private-refresh",
+                    "scope": "resource.invoke chatgpt.tokens.use.direct", "expires_in": 3600}
+        if url.endswith("/models"):
+            assert token == "private-access"
+            return {"models": [{"visibility": "list", "slug": "test-model", "display_name": "Test model"}]}
+        assert url.endswith("/revoke") and form["token"] == "private-refresh"
+        return {}
+
+    monkeypatch.setattr(chatgpt, "_host_id", lambda: "urn:uuid:583e1c1c-ca3a-429c-8608-6a08869660df")
+    monkeypatch.setattr(chatgpt, "_request", request)
+    monkeypatch.setattr(chatgpt, "_identity", lambda token, client_id, nonce: {"email": "analyst@example.com"})
+
+    def resolve(entries, cfg, warnings):
+        assert cfg.llm == "chatgpt" and cfg.llm_api_key == "private-access" and cfg.model_name == "test-model"
+        return {"0": "B"}
+
+    monkeypatch.setattr("numcheck.web.app.resolve_ambiguous", resolve)
+    local = {"base_url": "http://127.0.0.1:5098", "headers": HDR}
+    assert client.get("/api/chatgpt/status", headers=HDR).status_code == 403
+    authorize = client.post("/api/chatgpt/connect", **local).get_json()["url"]
+    query = parse_qs(urlsplit(authorize).query)
+    assert query["client_id"] == ["dynamic_agent_client"] and query["code_challenge_method"] == ["S256"]
+    redirect = query["redirect_uri"][0]
+    callback = urlencode({"state": query["state"][0], "code": "example-code", "client_id": "issued-client"})
+    with urlopen(redirect + "?" + callback, timeout=5) as response:
+        assert b"ChatGPT connected" in response.read()
+    status = client.get("/api/chatgpt/status", **local).get_json()
+    assert status["connected"] and status["account"] == "analyst@example.com"
+    assert "private-access" not in str(status)
+    assert client.get("/api/chatgpt/models", **local).get_json()["models"][0]["id"] == "test-model"
+    assert client.post("/api/providers/test", data={"llm": "chatgpt", "llm_model": "test-model"}, **local).status_code == 200
+    assert not client.post("/api/chatgpt/disconnect", **local).get_json()["connected"]
+
+
 def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_path, monkeypatch):
     import hashlib
 
