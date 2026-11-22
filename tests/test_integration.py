@@ -109,3 +109,18 @@ def test_keystone_visual_demo_traces_every_planted_discrepancy(tmp_path):
     }
     stale = next(issue for issue in issues if issue.issue_type.value == "stale")
     assert stale.details["old_cell"] == "[Keystone_Model_v3_prior.xlsx] Adj EBITDA!G11"
+
+    verified_sources = {(m.deck.slide_number, m.deck.raw_text, m.model.sheet_name, m.model.cell_address)
+                        for m in result.matches if m.status == "matched" and m.model is not None}
+    assert {
+        (1, "$1,168m", "Segments", "F10"),
+        (1, "$253.0m", "Adj EBITDA", "F11"),
+        (1, "21.7%", "Adj EBITDA", "F12"),
+        (8, "709.8", "DCF", "C23"),
+        (8, "2,973.3", "DCF", "C26"),
+        (8, "(623.5)", "DCF", "C27"),
+        (8, "$27.78", "DCF", "C30"),
+        (10, "2.9x", "Cap", "C14"),
+    } <= verified_sources
+    assert {m.model.cell_address for m in result.matches if m.deck.slide_number == 7 and m.deck.source.value == "table"
+            and m.deck.unit == "multiple" and m.status == "matched"} == {f"F{row}" for row in (5, 6, 7, 8, 9, 10, 12)}

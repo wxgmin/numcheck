@@ -32,7 +32,7 @@ from numcheck.matching.llm_matcher import MAX_CANDIDATES, build_entry
 from numcheck.matching.normalizer import compare, dimensions_compatible
 from numcheck.matching.value_match import significant_digits_of
 from numcheck.models import DeckNumber, Match, ModelValue, ReviewWarning, SlideInfo
-from numcheck.periods import parse_period
+from numcheck.periods import parse_period, period_key
 from numcheck.periods import period_affinity as _period_affinity
 
 _TOTAL_COL_RE = re.compile(r"(?:total|group|consolidated|combined|overall|firm[- ]?wide|company|all)\b", re.I)
@@ -242,6 +242,9 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
     if st.stats:
         deck_covenant = deck_covenant | {"minimum", "maximum"}
     title = st.title_tokens
+    # In a transaction table the row date and the multiple's reporting horizon are
+    # different axes. A March transaction can have an LTM EBITDA multiple.
+    horizon = index.parts(d.col_label).period if d.table_row >= 0 and "mo" in st.period else ""
     tiers: list[int] = []   # context tier of each entry of cands
     for i, base, kind in _scored_candidates(index, query, min_s * 0.9):
         mv = vals[i]
@@ -258,6 +261,8 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
         if (index.quals[i] & _METRIC_DEFINING) - st.quals:
             continue   # "same-store sales growth" is a different metric from "net sales growth"
         mp = index.periods[i]
+        if horizon in ("ltm", "ntm") and mp == horizon and period_key(mv.row_label) == st.period:
+            mp = st.period
         if st.period and period_affinity(st.period, mp) == 0.0:
             excluded.append(_Cand(i, base, kind, base))
             continue
@@ -298,6 +303,13 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
             for c, t in tied:
                 c.score *= mult[t]
     cands = [c for c in cands if c.score >= min_s]
+    if "dcf" in title:
+        # A slide explicitly presenting a DCF can identify its own valuation metrics
+        # from DCF rows rather than equally named trading-comps columns.
+        scoped = [c for c in cands if query.tokens <= index.row_tokens(c.idx)
+                  and "dcf" in index.tokens_of(vals[c.idx].sheet_name)]
+        if scoped:
+            cands = scoped
     if st.stats and any(index.stats(c.idx) & st.stats for c in cands):
         # "Median EV / NTM EBITDA": when the model has a Median row, a single peer that happens to share
         # the value is not that statistic.

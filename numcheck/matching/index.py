@@ -35,7 +35,7 @@ EMPTY: frozenset[str] = frozenset()
 
 # Sheet / section names that carry no entity signal ("Model", "Output", "IS", "Annual" ...).
 GENERIC_CONTEXT = frozenset("""
-model output outputs summary is pl p l bs cf dcf inputs input calcs calc calculation calculations annual quarterly
+model output outputs summary is pl p l bs cf inputs input calcs calc calculation calculations annual quarterly
 monthly data sheet sheets income statement balance cash flow overview analysis backup old scratch tab page
 financials financial assumptions table tables schedule schedules
 """.split())

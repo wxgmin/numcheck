@@ -1247,7 +1247,7 @@ def _process_slide(slide_idx: int, slide, prs_height: int, config: Config) -> tu
     for it in items:
         shape = it.shape
         try:
-            _extract_text_item(ctx, it)
+            _extract_text_item(ctx, it, items)
         except Exception as exc:  # noqa: BLE001
             ctx.warnings.append(ReviewWarning("shape_error", f"Could not read text on slide {slide_idx} ({exc}).",
                                               slide_number=slide_idx, count=1))
@@ -1306,11 +1306,45 @@ def _callout_caption(shape) -> str:
     return ""
 
 
-def _extract_text_item(ctx: _SlideCtx, it: _TextItem) -> None:
+def _caption_text(text: str) -> str:
+    text = text.strip()
+    if (not text or len(text) > 120 or "\n" in text or _STRONG_FOOT_RE.match(text)
+            or _has_checkable_numbers(text) or not _label_text([text]) or (_banner_hint(text) and not PER_SHARE_RE.search(text))
+            or re.fullmatch(r"yoy|year.over.year|qoq|cagr|growth|margin|(?:value|price) per share", text, re.I)
+            or not re.search(r"[^\W\d_]", text)):
+        return ""
+    return text
+
+
+def _separate_caption(item: _TextItem, items: list[_TextItem]) -> str:
+    """Pair visually aligned top-level callouts without looking at their values."""
+    parent = item.shape._element.getparent()
+    if parent.tag == qn("p:grpSp"):
+        return ""
+    width = item.shape.width or 0
+    if not width or item.shape.rotation:
+        return ""
+    captions = []
+    for peer in items:
+        if (peer is item or peer.kind == "footnote" or peer.ph_type in _TITLE_PLACEHOLDERS
+                or peer.shape._element.getparent() is not parent or peer.shape.rotation):
+            continue
+        peer_width = peer.shape.width or 0
+        gap = peer.top - item.bottom
+        overlap = min(item.left + width, peer.left + peer_width) - max(item.left, peer.left)
+        if (0 <= gap <= 91440 and width * .7 <= peer_width <= width * 1.5
+                and overlap >= .8 * min(width, peer_width)):
+            caption = _caption_text(peer.text)
+            if caption:
+                captions.append(caption)
+    return captions[0] if len(captions) == 1 else ""
+
+
+def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) -> None:
     shape = it.shape
     shape_id = str(shape.shape_id)
     paras = _paragraph_texts(shape.text_frame)
-    single_line = sum(bool(text.strip()) for text in paras) == 1
+    lines = [line.strip() for text in paras for line in text.splitlines() if line.strip()]
     last_period = ""   # bullets inherit the most recent explicit period of the same text box
     for pi, text in enumerate(paras):
         if not text.strip():
@@ -1321,12 +1355,23 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem) -> None:
         nums, skipped = scan_paragraph(ctx, text, ctx.hint, source=Source.TEXT_BOX, shape_id=shape_id, para_idx=pi)
         guidance = bool(_GUIDANCE_RE.search(text))
         for dn in nums:
-            if single_line and not dn.label and not (text[:dn.char_start] + text[dn.char_end:]).strip():
-                caption = _callout_caption(shape)
+            start = text.rfind("\n", 0, dn.char_start) + 1
+            end = text.find("\n", dn.char_end)
+            end = len(text) if end < 0 else end
+            display_line = text[start:end].strip()
+            if not dn.label and not (text[start:dn.char_start] + text[dn.char_end:end]).strip():
+                caption = ""
+                if len(lines) == 2:
+                    other = lines[1] if lines[0] == display_line else lines[0]
+                    caption = _caption_text(other)
+                elif len(lines) == 1:
+                    caption = _callout_caption(shape) or _separate_caption(it, items)
                 if caption:
                     dn.label = _label_text([caption])
                     dn.period = _period_hint([caption]) or dn.period
                     dn.context = f"{caption}: {dn.raw_text}"
+                    if ctx.hint and ctx.hint.per_share_exception and dn.unit_source == ctx.hint.source and PER_SHARE_RE.search(caption):
+                        dn.scale, dn.scale_known = "", True
             if guidance and "guidance" not in dn.qualifiers:
                 dn.qualifiers.append("guidance")
             if dn.period:
