@@ -21,6 +21,25 @@ from numcheck.web.app import create_app
 from tests.test_reports import make_result
 
 HDR = {"X-Requested-With": "numcheck"}
+
+
+@pytest.fixture
+def unresolved_demo(monkeypatch):
+    """Keep demo figures unresolved so the reviewer workflow (source search, confirm, undo) has targets.
+
+    The engine now verifies the demo's "+12.0%" segment growth and the WACC/TGR sensitivity range on its
+    own; these tests exercise the review UI around unresolved figures, not the matching heuristics.
+    """
+    import numcheck.matching.derived as derived
+    import numcheck.matching.pipeline as pipeline
+    import numcheck.matching.source_search as source_search
+
+    real_pairs = pipeline.verify_range_pairs
+    monkeypatch.setattr(derived, "verify_derived", lambda *a, **k: 0)
+    monkeypatch.setattr(derived, "verify_adjustments", lambda *a, **k: 0)
+    monkeypatch.setattr(pipeline, "verify_range_pairs", lambda m, i, p, recover=False: real_pairs(m, i, p))
+    monkeypatch.setattr(source_search, "_adjacent_value_pair", lambda *a, **k: [])
+    monkeypatch.setattr(source_search, "_loose_range_pair", lambda *a, **k: [])
 STATIC = Path(__file__).resolve().parent.parent / "numcheck" / "web" / "static"
 
 
@@ -436,7 +455,7 @@ def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_pa
 
 
 @pytest.mark.parametrize("upload", [False, True], ids=["demo", "two-workbooks"])
-def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch, upload):
+def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch, upload, unresolved_demo):
     calls = []
 
     def rank(entries, config, warnings):
@@ -563,7 +582,7 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch, 
         assert confirmed["source_cell"] == reconciles["ref"]
 
 
-def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monkeypatch):
+def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monkeypatch, unresolved_demo):
     monkeypatch.chdir(tmp_path)
     calls = []
 

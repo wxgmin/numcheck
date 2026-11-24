@@ -295,7 +295,11 @@ _ATTR_DATE_HDR_RE = re.compile(
     r"\b(?:date|dated|vintage|maturity|matures|entry|exit|closing|closed|acquired|acquisition|founded|"
     r"inception|expiry|expiration|signed|announced|completed)\b", re.I)
 
-_BANNER_TAIL_RE = re.compile(r"[,;]?\s*\b(?:except|unless|other\s+than|excluding|excl\.?)\b|;", re.I)
+# Clauses after the unit statement that qualify it rather than make it prose: exceptions and the fiscal
+# year convention ("$ in millions, fiscal year ending December 31", "€m; FYE 31-Mar").
+_BANNER_TAIL_RE = re.compile(
+    r"[,;]?\s*\b(?:except|unless|other\s+than|excluding|excl\.?|fiscal\s+years?|fye|fy\s+end(?:ing|ed|s)?|"
+    r"years?\s+end(?:ing|ed|s)?|year[- ]end(?:ing|ed)?|as\s+(?:of|at)|for\s+the\s+(?:fiscal\s+)?years?)\b|;", re.I)
 
 
 def _is_pure_banner(t: str) -> bool:

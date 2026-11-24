@@ -37,6 +37,9 @@ COUNT_WORDS = {
     "bbl", "boe", "mw", "gw", "mwh", "gwh", "sq", "sqft", "beds", "rooms", "patients", "countries",
     "offices", "deals", "transactions", "downloads", "visits", "orders", "products", "skus", "hours",
     "days", "months", "years", "times", "x",
+    "properties", "property", "assets", "buildings", "logos", "branches", "restaurants", "doors", "towers",
+    "tenants", "plants", "facilities", "vessels", "aircraft", "wells", "mines", "hotels", "keys", "schools",
+    "clinics", "hospitals", "brands", "markets", "programmes", "programs", "contracts", "projects", "fte", "ftes",
 }
 
 
@@ -90,6 +93,9 @@ _IDENT_BEFORE_RE = re.compile(
     r"case|year|yr|quarter|month|week|day|slide|page|appendix|exhibit|note|section|table|chart|figure|no\.?|"
     r"number|#|rule\s+of|segment|division|region|plant|site|facility|building|tower|store|project|portfolio|"
     r"line|group|level|batch|vintage|sleeve|pool|deal|asset|property|campus|mine|well|field|vessel)\s*$", re.I)
+# Benchmark rate before a spread: "S+275", "SOFR + 325", "L+400", "EURIBOR+350" (the number is basis points).
+_SPREAD_BEFORE_RE = re.compile(
+    r"\b(?:S|SOFR|TSOFR|L|LIBOR|E|EUR|EURIBOR|SONIA|SARON|TONA|BBSY|CDOR|CORRA|T|UST|Base|Prime)\s*\+\s*$")
 # Asset / ticker style codes glued to letters ("CVX-101", "ABC 123", "B-2"): identifiers.
 _CODE_BEFORE_RE = re.compile(r"\b[A-Z]{1,6}-$")
 
@@ -310,6 +316,10 @@ def scan_numbers(text: str, hint: UnitHint | None = None) -> list[ParsedNumber]:
                 c = sm.group("curs").strip()
                 currency = CURRENCY_SYMBOLS.get(c.lower(), c.upper())
                 dimension, unit_explicit, unit_source = "currency", True, "token"
+        if dimension == "none" and _SPREAD_BEFORE_RE.search(
+                text[max(0, start - 12):start] + ("+" if raw.lstrip().startswith("+") else "")):
+            # "S+275", "SOFR + 325", "L+400", "E+350": a floating-rate spread is quoted in basis points.
+            dimension, unit_explicit, unit_source = "bps", True, "token"
         if minor_unit and dimension == "none":
             # Pence / cents are compared as raw per-unit amounts (models keep per-share data in pence/cents
             # under "except per share data in pence"); cents carry no reliable currency.
@@ -528,12 +538,19 @@ def parse_unit_banner(text: str) -> UnitHint:
             and not hint.currency and not hint.scale:
         # "Contract years remaining", "Payback (months)", "DSO days": durations are counts, never money.
         hint.dimension, hint.scale, hint.scale_known = "count", "", True
+    elif _COUNT_NOUN_RE.search(t.strip()) and hint.dimension == "none" and not hint.currency and not hint.scale:
+        # "New logos", "Customers", "Headcount", "Stores": a count column, even on a "$ in thousands" sheet.
+        hint.dimension, hint.scale, hint.scale_known = "count", "", True
     elif _PHYSICAL_UNIT_RE.search(t) and hint.dimension == "none" and not hint.currency:
         # "Installed capacity (MW)", "Generation (GWh)", "Production (kboe/d)": physical quantities, not money.
         hint.dimension, hint.scale, hint.scale_known = "count", "", True
     return hint
 
 
+_COUNT_NOUN_RE = re.compile(
+    r"^(?:(?:new|total|active|net|paying|gross|number\s+of|no\.\s+of|#\s*(?:of)?)\s+)*"
+    r"(?:logos|customers|clients|users|subscribers|employees|headcount|ftes?|stores|locations|doors|accounts|"
+    r"members|patients|deals|transactions|branches|restaurants|sites|properties|units)\s*(?:\(#\))?$", re.I)
 _PHYSICAL_UNIT_RE = re.compile(
     r"\(\s*(?:mw|gw|kw|mwh|gwh|twh|kwh|mwp|boe|kboe|mmboe|boe/d|kboe/d|bbl|kbbl|mmbbl|bcf|mmcf|mcf|tonnes?|kt|mt|"
     r"oz|koz|moz|sq\.?\s?ft|sqm|m2|beds|rooms|keys|units|stores|sites|employees|fte|subscribers|customers|users|"

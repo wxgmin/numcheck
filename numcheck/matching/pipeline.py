@@ -939,7 +939,9 @@ def match_deck_to_model(
     if pending and _llm_enabled(config):
         _run_llm(pending, index, config, warnings)
 
-    verify_range_pairs(results, index, display_precision(config))
+    # Both ends of a displayed range reconciling to one low/high pair of cells is deterministic evidence,
+    # so unresolved range endpoints are recovered here, not only in the optional source search.
+    verify_range_pairs(results, index, display_precision(config), recover=True)
 
     if old_model_values:
         try:

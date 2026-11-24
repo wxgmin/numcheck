@@ -85,6 +85,7 @@ def run_review(
 
     report("models", 0.25, "Reading models")
     model_values = []
+    model_texts = []
     sheets = []
     seen_names: dict[str, int] = {}
     for i, path in enumerate(model_paths):
@@ -92,6 +93,7 @@ def run_review(
         ext = extract_model_full(path, config)
         _dedupe_workbook_name(ext, seen_names)
         model_values.extend(ext.values)
+        model_texts.extend(ext.texts)
         sheets.extend(ext.sheets)
         warnings.extend(ext.warnings)
     if not model_values:
@@ -125,12 +127,27 @@ def run_review(
             m.status = "unmatched"
             m.note = (m.note + "; " if m.note else "") + "forward-looking target/guidance differs from the model"
     try:
-        from numcheck.matching.derived import verify_derived
+        from numcheck.matching.derived import verify_adjustments, verify_derived, verify_pie_shares
 
         verify_derived(matches, model_values, config, slides=deck.slides)
+        verify_adjustments(matches, model_values, config)
+        verify_pie_shares(matches, model_values, config)
     except Exception:  # noqa: BLE001 - an optional enrichment must not abort the review
         log.exception("derived verification failed")
         warnings.append(ReviewWarning("derived_failed", "Derived growth/margin verification was skipped."))
+
+    try:
+        from numcheck.matching.text_mentions import (
+            corroborate_value_only,
+            resolve_ambiguous_by_value,
+            verify_text_mentions,
+        )
+
+        resolve_ambiguous_by_value(matches, model_values, config)
+        verify_text_mentions(matches, model_texts)
+        corroborate_value_only(matches)
+    except Exception:  # noqa: BLE001 - an optional enrichment must not abort the review
+        log.exception("text-mention verification failed")
 
     for match in matches:
         if match.deck.source == Source.OCR:
@@ -302,6 +319,8 @@ def _dedupe_workbook_name(ext: ModelExtraction, seen: dict[str, int]) -> None:
     for v in ext.values:
         v.workbook = new
         v.uid = f"{new}|{v.sheet_name}!{v.cell_address}"
+    for t in ext.texts:
+        t.workbook = new
 
 
 def _dedupe_warnings(warnings: list[ReviewWarning]) -> list[ReviewWarning]:

@@ -74,6 +74,11 @@ _AFTER_STOP = _FILLER | {
     "compared", "which", "that", "while", "but", "because", "after", "before", "during", "across", "between",
     "through", "driven", "equating", "equivalent", "when", "where", "yielding", "resulting", "assuming",
     "also",
+    # verbs and adverbs that start a predicate ("Restructuring of $6.4m relates to ...")
+    "relates", "relate", "related", "relating", "reflects", "reflect", "represents", "represent", "comprises",
+    "comprise", "consists", "consist", "includes", "include", "excludes", "accounts", "arises", "arose", "stems",
+    "comes", "attributable", "due", "primarily", "mainly", "largely", "mostly", "principally", "will", "would",
+    "could", "should", "may", "might", "can", "remains", "remained", "continues", "continued", "owing", "following",
 }
 _AFTER_LEAD = {"of", "the", "a", "an", "c", "ca", "approximately", "approx", "about", "around", "circa"}
 # Interior words after which a label restarts ("Acquisition of Target at an enterprise value of $4.4bn").
@@ -194,6 +199,9 @@ def _choose_period(text: str, c_start: int, c_end: int, n: ParsedNumber) -> tupl
             d = -1   # "31.0 months in FY24": the period attached right after the number owns it
         elif s < n.start and re.search(r"\bfrom\s+$", text[max(0, n.start - 8):n.start], re.I):
             d += 1000   # "... in FY25 from 31.0": a "from" value belongs to the earlier period, not the one before
+        elif s >= n.end and re.search(r"\b(?:before|after|until|till|prior\s+to|beyond|post|through|since)\s+$",
+                                      text[max(n.end, s - 12):s], re.I):
+            continue    # "$742m with no maturities before 2029": a bound on something else, not this figure's date
         if d < best_d:
             best, best_d = key, d
     if not best and spans:
@@ -816,6 +824,10 @@ def _period_hint(texts: list[str]) -> str:
 _NA_RE = re.compile(r"^\s*(?:n\.?\s?m\.?|n\.?\s?a\.?|n/a|nil|tbd|[-–—−]+|\*+)\s*$", re.I)
 
 
+_CELL_UNIT_WORDS = {"million", "millions", "billion", "billions", "thousand", "thousands", "bps", "times", "usd",
+                    "eur", "gbp", "ltm", "ntm", "per", "share", "est", "act", "approx"}
+
+
 def _classify_text(text: str) -> str:
     t = text.strip()
     if not t:
@@ -824,7 +836,10 @@ def _classify_text(text: str) -> str:
         return "na"
     parsed = scan_numbers(t)
     if any(not n.skip_reason for n in parsed):
-        return "num"
+        # "Revolving credit facility ($250m)", "6.375% Senior notes": a name that carries a figure is a label
+        words = [w for w in re.findall(r"[A-Za-z]{3,}", _DATE_TEXT_RE.sub(" ", t))
+                 if w.lower() not in _CELL_UNIT_WORDS and not re.fullmatch(_MONTH_PAT, w, re.I)]
+        return "text" if len(words) >= 2 else "num"
     if find_periods(t) or any(n.skip_reason in ("year", "period", "date") for n in parsed):
         return "period"
     return "text"
@@ -1275,6 +1290,7 @@ def _process_slide(slide_idx: int, slide, prs_height: int, config: Config) -> tu
                                               f"({exc}).", slide_number=slide_idx, count=1))
 
     _resolve_short_callouts(ctx, items, slide.shapes)
+    _label_chart_overlays(ctx, items, frames)
 
     if config.read_speaker_notes:
         _extract_notes(ctx, slide)
@@ -1340,9 +1356,11 @@ def _separate_caption(item: _TextItem, items: list[_TextItem]) -> str:
         overlap = min(item.left + width, peer.left + peer_width) - max(item.left, peer.left)
         if not (width * .7 <= peer_width <= width * 1.5 and overlap >= .8 * min(width, peer_width)):
             continue
-        if 0 <= peer.top - item.bottom <= 91440:
+        # KPI tiles often overlap the number and caption boxes a little or space them a little apart.
+        slack = -max(item.bottom - item.top, 0) // 2
+        if slack <= peer.top - item.bottom <= 228600 and peer.top > item.top:
             candidates = below
-        elif 0 <= item.top - peer.bottom <= 91440:
+        elif slack <= item.top - peer.bottom <= 228600 and peer.top < item.top:
             candidates = above
         else:
             continue
@@ -1350,7 +1368,94 @@ def _separate_caption(item: _TextItem, items: list[_TextItem]) -> str:
         if caption:
             candidates.append(caption)
     captions = below or above
-    return captions[0] if len(captions) == 1 else ""
+    if len(captions) == 1:
+        return captions[0]
+    if captions:
+        return ""
+    return _row_label_left(item, items)
+
+
+def _label_chart_overlays(ctx: _SlideCtx, items: list[_TextItem], frames) -> None:
+    """A figure typed on top of a chart ("$1,168m" in a doughnut's hole) is about that chart.
+
+    Only unlabelled text-box numbers whose box centre lies inside a chart frame are touched; the label is
+    the chart's title, else its single series name.
+    """
+    charts = []
+    for shape, _top in frames:
+        if not getattr(shape, "has_chart", False):
+            continue
+        try:
+            chart = shape.chart
+            name = chart.chart_title.text_frame.text.strip() if chart.has_title else ""
+            if not name:
+                series = [s.name for p in chart.plots for s in p.series if s.name]
+                name = series[0] if len(set(series)) == 1 else ""
+            if name and not _has_checkable_numbers(name):
+                charts.append((shape.left or 0, shape.top or 0, (shape.left or 0) + (shape.width or 0),
+                               (shape.top or 0) + (shape.height or 0), name))
+        except Exception:  # noqa: BLE001 - a chart without a readable title simply gives no label
+            continue
+    if not charts:
+        return
+    boxes = {str(it.shape.shape_id): it for it in items}
+    for dn in ctx.numbers:
+        if dn.label or dn.source != Source.TEXT_BOX or dn.shape_id not in boxes:
+            continue
+        it = boxes[dn.shape_id]
+        cx = it.left + (it.shape.width or 0) // 2
+        cy = (it.top + it.bottom) // 2
+        inside = [c for c in charts if c[0] <= cx <= c[2] and c[1] <= cy <= c[3]]
+        if len(inside) == 1:
+            dn.label = _label_text([inside[0][4]])
+            dn.context = f"{inside[0][4]}: {dn.context or dn.raw_text}"
+
+
+def _heading_above(item: _TextItem, items: list[_TextItem]) -> str:
+    """Single caption-like box stacked directly above *item* with the same left edge and similar width."""
+    parent = item.shape._element.getparent()
+    width = item.shape.width or 0
+    if not width:
+        return ""
+    found = []
+    for peer in items:
+        if (peer is item or peer.kind == "footnote" or peer.ph_type in _TITLE_PLACEHOLDERS
+                or peer.shape._element.getparent() is not parent or peer.shape.rotation):
+            continue
+        peer_width = peer.shape.width or 0
+        if abs(peer.left - item.left) > 91440 or not (width * .6 <= peer_width <= width * 1.6):
+            continue
+        if -(peer.bottom - peer.top) // 2 <= item.top - peer.bottom <= 182880 and peer.top < item.top:
+            caption = _caption_text(peer.text)
+            if caption:
+                found.append(caption)
+    return found[0] if len(found) == 1 else ""
+
+
+def _row_label_left(item: _TextItem, items: list[_TextItem]) -> str:
+    """A lone figure placed on a row whose name sits to its left ("Trading comparables ... 2,834").
+
+    Football fields and hand-built tables put the row name in a text box at the left edge and the figure
+    further right on the same band. The nearest text-only box to the left whose vertical extent covers
+    the figure's middle is that row's name.
+    """
+    parent = item.shape._element.getparent()
+    mid = (item.top + item.bottom) // 2
+    best, best_gap = "", None
+    for peer in items:
+        if (peer is item or peer.kind == "footnote" or peer.ph_type in _TITLE_PLACEHOLDERS
+                or peer.shape._element.getparent() is not parent or peer.shape.rotation):
+            continue
+        peer_right = peer.left + (peer.shape.width or 0)
+        if peer_right > item.left + 45720 or not (peer.top <= mid <= peer.bottom):
+            continue
+        caption = _caption_text(peer.text.splitlines()[0] if peer.text else "")
+        if not caption:
+            continue
+        gap = item.left - peer_right
+        if best_gap is None or gap < best_gap:
+            best, best_gap = caption, gap
+    return best
 
 
 def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) -> None:
@@ -1390,6 +1495,11 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
             # A heading in the same text box can distinguish otherwise identical metrics.
             if dn.is_range and dn.label and len(lines) == 2 and display_line == lines[1]:
                 heading = _caption_text(lines[0])
+                if heading and heading.casefold() not in dn.label.casefold():
+                    dn.label = _label_text([heading, dn.label])
+            elif dn.is_range and dn.label and len(lines) == 1:
+                # "Trading comparables" in its own box stacked on "10.5x-12.5x FY25E Adj. EBITDA" (football fields)
+                heading = _heading_above(it, items)
                 if heading and heading.casefold() not in dn.label.casefold():
                     dn.label = _label_text([heading, dn.label])
             projected_label = _PROJECTION_PREFIX.sub("", dn.label)

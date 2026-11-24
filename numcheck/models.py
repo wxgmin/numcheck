@@ -258,11 +258,27 @@ class DeckExtraction:
 
 
 @dataclass
+class ModelText:
+    """A text cell that may state a figure in words ("Revolving credit facility ($250m)", "S+275")."""
+
+    workbook: str
+    sheet_name: str
+    cell_address: str
+    text: str
+    row: int = 0
+    col: int = 0
+    row_label: str = ""           # leftmost text of the same row (the row's label), if not this cell
+    col_label: str = ""           # nearest text above in the same column (a header such as "Rate")
+    hidden: bool = False
+
+
+@dataclass
 class ModelExtraction:
     values: list[ModelValue] = field(default_factory=list)
     sheets: list[SheetInfo] = field(default_factory=list)
     warnings: list[ReviewWarning] = field(default_factory=list)
     workbook: str = ""
+    texts: list[ModelText] = field(default_factory=list)
 
 
 @dataclass

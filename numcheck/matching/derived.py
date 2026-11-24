@@ -111,8 +111,10 @@ def verify_derived(matches: list[Match], model_values: list[ModelValue], config,
         is_delta(m) or m.deck.unit in ("percent", "multiple")))
         or (m.status == "ambiguous" and (is_delta(m) or growthy(m)))]
     # Ranges, approximations and targets/guidance are forward-looking statements: never recompute them.
-    targets = [m for m in targets if not m.deck.is_range and m.deck.comparator == "="
-               and "guidance" not in (m.deck.qualifiers or [])]
+    # A projection tied to one model year ("projected to grow 8.0% in FY25E") is a model figure, though.
+    targets = [m for m in targets if (not m.deck.is_range or m.deck.unit == "multiple") and m.deck.comparator == "="
+               and ("guidance" not in (m.deck.qualifiers or [])
+                    or re.fullmatch(r"(?:fy|cy|y)\d{2}", m.deck.period or ""))]
     if not targets or not model_values:
         return 0
     lookup = _Lookup(model_values, config)
@@ -126,7 +128,13 @@ def verify_derived(matches: list[Match], model_values: list[ModelValue], config,
         lookup.context = m.deck.slide_context or m.deck.slide_title or ""
         try:
             nearby = verified_levels.get((m.deck.slide_number, m.deck.shape_id), [])
-            ok = _verify_delta(m, lookup, config, hints) if is_delta(m) else _verify_one(m, lookup, config, hints, nearby)
+            if is_delta(m):
+                # "+12.0%" / "grow 8.0%": first a percentage-point change of a rate, else a growth rate of a level
+                ok = _verify_delta(m, lookup, config, hints) or (
+                    m.deck.unit == "percent" and m.status != "mismatch"
+                    and _verify_one(m, lookup, config, hints, nearby))
+            else:
+                ok = _verify_one(m, lookup, config, hints, nearby)
             if ok:
                 changed += 1
         except (ValueError, ZeroDivisionError, OverflowError):
@@ -154,6 +162,10 @@ def _growth_intent(d: DeckNumber) -> int:
     window = d.context[max(0, d.char_start - 40):d.char_start]
     if re.search(r"\bto\s*$", window, re.I):
         return 0
+    if d.unit == "percent" and (d.raw_text or "").lstrip("(").startswith("+"):
+        return 1   # "led by Aerospace Components (+12.0%)": an explicitly signed percentage is a change
+    if d.unit == "percent" and (d.raw_text or "").lstrip("(").startswith(("-", "−", "–")):
+        return -1
     if _DOWN.search(window):
         return -1
     if _UP.search(window):
@@ -229,6 +241,10 @@ def _projected_cagr(m: Match, base: frozenset[str], nearby: list[Match], config)
 
 def _verify_one(m: Match, lookup: _Lookup, config, hints: dict[int, str], nearby: list[Match]) -> bool:
     d = m.deck
+    if d.is_range:
+        # Range endpoints are only ever *confirmed* (an implied multiple of a named value), never flagged.
+        return d.unit == "multiple" and _implied_multiple(
+            m, lookup, config, d.period or hints.get(d.slide_number, "") or config.base_period)
     # Sentence punctuation bounds the claim while preserving decimal values and fiscal-year ranges.
     clause = next((piece.group() for piece in _SENTENCE.finditer(d.context)
                    if piece.start() <= d.char_start < piece.end()), "") if d.char_start is not None else ""
@@ -244,7 +260,9 @@ def _verify_one(m: Match, lookup: _Lookup, config, hints: dict[int, str], nearby
         if _AVERAGE_ANNUAL.search(text) and not re.search(r"\b(?:cagr|compound(?:ed)?)\b", text, re.I):
             return False  # Arithmetic mean of annual changes and CAGR are different measures.
         base = frozenset(t for t in toks if t not in _NOISE) - _UNIT_WORDS
-        if not base or (base not in lookup.by_tokens and not parts.qualifiers and not parts.entity):
+        if not base or base not in lookup.by_tokens:
+            # "Aftermarket Services provides a recurring base, growing 8.2%": the metric is the model label
+            # named in the sentence, not the whole phrase before the number.
             base = _metric_from_clause(d, lookup) or base
         if not base:
             return False
@@ -265,7 +283,19 @@ def _verify_one(m: Match, lookup: _Lookup, config, hints: dict[int, str], nearby
                 start, end = lookup.value(base, start_key), lookup.value(base, end_period.key)
                 return _apply_growth(m, start, end, config, years=years, name=f"{years}-year CAGR",
                                      decline=intent < 0)
-            return _projected_cagr(m, base, nearby, config)
+            if _projected_cagr(m, base, nearby, config):
+                return True
+            # "revenue of $1,463m by FY27E, a 7.8% CAGR": a projection CAGR runs from the last actual year.
+            if len(end_periods) == 1:
+                end_period = next(iter(end_periods.values()))
+                last_a = _last_actual(lookup, base)
+                if last_a is not None and last_a.year < end_period.year:
+                    years = end_period.year - last_a.year
+                    start = lookup.value(base, last_a.key)
+                    end = lookup.value(base, end_period.key)
+                    return _apply_growth(m, start, end, config, years=years,
+                                         name=f"{years}-year CAGR from the last actual year", confirm_only=True)
+            return False
         if not period:
             return False
         if len({p.key for p, _, _ in find_periods(clause or text) if p.year is not None}) > 1:
@@ -274,6 +304,8 @@ def _verify_one(m: Match, lookup: _Lookup, config, hints: dict[int, str], nearby
         return _apply_growth(m, prev, cur, config, decline=intent < 0)
 
     if d.unit != "multiple" and _verify_share(m, lookup, config, period):
+        return True
+    if d.unit == "multiple" and (_table_ratio(m, lookup, config, period) or _implied_multiple(m, lookup, config, period)):
         return True
 
     from numcheck.checks.arithmetic import RELATIONS
@@ -331,6 +363,203 @@ def _verify_share(m: Match, lookup: _Lookup, config, period: str) -> bool:
     return False
 
 
+_RATIO_HEADER_RE = re.compile(r"^\s*(?:x|×|/|÷|as\s+a\s+multiple\s+of|multiple\s+of)\s+(.+)$", re.I)
+_RANGE_ROLE = {"low": re.compile(r"\b(?:low|min(?:imum)?|bottom)\b", re.I),
+               "high": re.compile(r"\b(?:high|max(?:imum)?|top)\b", re.I)}
+_GENERIC_WORDS = {"implied", "implies", "implying", "value", "range", "of", "the", "and", "at", "x", "times",
+                  "total", "per", "share", "fy", "ltm", "ntm"}
+
+
+def _phrase_metric(phrase: str, lookup: _Lookup, config) -> tuple[frozenset[str] | None, str]:
+    """(model metric key, period) named by a short phrase ("FY24A Adj. EBITDA" -> adjusted ebitda, fy24)."""
+    if not phrase:
+        return None, ""
+    periods = [p.key for p, _, _ in find_periods(phrase)]
+    parts = split_label(phrase, config)
+    key = frozenset((parts.tokens | parts.qualifiers) - _UNIT_WORDS)
+    if key in lookup.by_tokens:
+        return key, (periods[0] if periods else "")
+    best = None
+    for k in lookup.by_tokens:
+        if k and k <= key and (best is None or len(k) > len(best)):
+            best = k
+    return best, (periods[0] if periods else "")
+
+
+def _table_ratio(m: Match, lookup: _Lookup, config, period: str) -> bool:
+    """Leverage tables: row "Term Loan B" x column "x FY24A Adj. EBITDA" = Term Loan B / FY24A Adj. EBITDA."""
+    d = m.deck
+    head = _RATIO_HEADER_RE.match(d.col_label or "")
+    if not head or not d.row_label:
+        return False
+    den_key, den_period = _phrase_metric(head.group(1), lookup, config)
+    num_key, _ = _phrase_metric(d.row_label, lookup, config)
+    if not den_key or not num_key or den_key == num_key:
+        return False
+    per = den_period or period
+    num = lookup.value(num_key, per) if per else _any_value(lookup, num_key)
+    num = num or _any_value(lookup, num_key)
+    den = lookup.value(den_key, per) if per else _any_value(lookup, den_key)
+    if not num or not den or den[1] <= 0 or not _compatible_inputs(num[0], den[0], config):
+        return False
+    return _apply(m, num[1] / den[1], num[0], f"{num[0].ref} / {den[0].ref}", config, other=den[0], confirm_only=True)
+
+
+def _implied_multiple(m: Match, lookup: _Lookup, config, period: str) -> bool:
+    """"Reference range implies 11.1x-13.4x FY24A Adjusted EBITDA": a value named in the sentence over
+    the metric named after the multiple. Confirms only, and only when exactly one named cell fits."""
+    d = m.deck
+    if not d.context or d.char_end is None or d.char_end < 0:
+        return False
+    tail = d.context[d.char_end:d.char_end + 60]
+    tail = re.split(r"\b(?:of|and|at|with|for)\b|[,;(]", tail, maxsplit=1)[0]
+    den_key, den_period = _phrase_metric(tail, lookup, config)
+    if not den_key:
+        return False
+    den = lookup.value(den_key, den_period or period) if (den_period or period) else _any_value(lookup, den_key)
+    if not den or den[1] <= 0:
+        return False
+    head = d.context[:d.char_start]
+    clause = re.split(r"(?<!\d)\.(?!\d)|[;\n]", head)[-1]   # "11.1x" is a number, not a sentence end
+    words = {w for w in re.findall(r"[a-z]+", clause.lower()) if len(w) > 2} - _GENERIC_WORDS - set(den_key)
+    role = _RANGE_ROLE.get(d.range_role) if d.is_range else None
+    if not words and role is None:
+        return False
+    _dim, lo, hi = deck_interval(d, config)
+    hits = []
+    seen = set()
+    for key, cells in lookup.by_tokens.items():
+        for mv in cells:
+            if mv.ref in seen or mv.unit not in ("currency", "none") or not _compatible_inputs(mv, den[0], config):
+                continue
+            seen.add(mv.ref)
+            label_text = f"{mv.row_label} {mv.col_label}"
+            label_words = set(re.findall(r"[a-z]+", label_text.lower()))
+            if words and not words & label_words:
+                continue
+            if not words and not role.search(label_text):
+                continue   # "11.1x-13.4x FY24A Adj. EBITDA" alone: only an explicit low / high cell can be the source
+            ratio = canonical_model(mv, config.unit_scales)[1] / den[1]
+            if lo - 1e-9 <= ratio <= hi + 1e-9:
+                hits.append((mv, ratio))
+    if role is not None and len(hits) > 1:
+        hits = [h for h in hits if role.search(f"{h[0].row_label} {h[0].col_label}")] or hits
+    if len(hits) != 1:
+        return False
+    mv, ratio = hits[0]
+    return _apply(m, ratio, mv, f"{mv.ref} / {den[0].ref}", config, other=den[0], confirm_only=True)
+
+
+def verify_pie_shares(matches: list[Match], model_values: list[ModelValue], config) -> int:
+    """Doughnut / pie slices in percent ("Debt mix": Term Loan B 73.5%, Senior notes 26.5%).
+
+    When every slice's category is a model figure, each slice is that figure's share of their sum.
+    Confirms only: the chart may use a different base than the slices shown.
+    """
+    lookup = _Lookup(model_values, config)
+    groups: dict[tuple, list[Match]] = {}
+    for m in matches:
+        d = m.deck
+        if (getattr(d.source, "value", d.source) == "chart" and d.unit == "percent"
+                and re.search(r"pie|doughnut", d.chart_type or "", re.I)):
+            groups.setdefault((d.slide_number, d.shape_id, d.series_index), []).append(m)
+    changed = 0
+    for members in groups.values():
+        if len(members) < 2 or not any(m.status in ("unmatched", "ambiguous") for m in members):
+            continue
+        cells = []
+        for m in members:
+            key, per = _phrase_metric(m.deck.col_label, lookup, config)
+            per = per or m.deck.period
+            hit = (lookup.value(key, per) if per else None) or _any_value(lookup, key) if key else None
+            if not hit or hit[1] < 0:
+                cells = []
+                break
+            cells.append(hit)
+        if not cells or len({c[0].ref for c in cells}) != len(cells):
+            continue
+        if not all(_compatible_inputs(cells[0][0], c[0], config) for c in cells[1:]):
+            continue
+        total = sum(c[1] for c in cells)
+        if total <= 0:
+            continue
+        for m, (mv, v) in zip(members, cells, strict=True):
+            if m.status in ("unmatched", "ambiguous") and _apply(
+                    m, v / total * 100.0, mv, f"{mv.ref} / sum of the chart's slices", config,
+                    other=cells[0][0], confirm_only=True):
+                changed += 1
+    return changed
+
+
+def verify_adjustments(matches: list[Match], model_values: list[ModelValue], config) -> int:
+    """"FY24A adjustments total $19.3m" = Adjusted EBITDA - reported EBITDA (confirm only), then
+    "$19.3m, or 7.6% of Adjusted EBITDA" = that amount / the base (confirm only)."""
+    from numcheck.matching.normalizer import canonical_deck, parsed_from_deck
+
+    lookup = _Lookup(model_values, config)
+    changed = 0
+    for m in matches:
+        d = m.deck
+        if m.status not in ("unmatched", "ambiguous") or d.unit != "currency" or d.is_range:
+            continue
+        text = f"{d.label} {d.slide_context or d.slide_title or ''}".lower()
+        if not re.search(r"\badjustments?\b|\badd[- ]?backs?\b", text):
+            continue
+        metric = next((w for w in ("ebitda", "ebit", "net income", "eps", "earnings") if w in
+                       f"{d.context} {d.slide_context or d.slide_title or ''}".lower()), None)
+        if not metric:
+            continue
+        mt = frozenset(metric.split())
+        adj_key = next((k for k in lookup.by_tokens if mt <= k and "adjusted" in k and len(k) == len(mt) + 1), None)
+        rep_key = next((k for k in lookup.by_tokens if mt <= k and "reported" in k and len(k) == len(mt) + 1), None)
+        rep_key = rep_key or (mt if mt in lookup.by_tokens else None)
+        per = d.period
+        if not adj_key or not rep_key or not per:
+            continue
+        a, r = lookup.value(adj_key, per), lookup.value(rep_key, per)
+        if not a or not r or not _compatible_inputs(a[0], r[0], config):
+            continue
+        if _apply(m, a[1] - r[1], a[0], f"{a[0].ref} - {r[0].ref} (total adjustments)", config,
+                  other=r[0], confirm_only=True):
+            changed += 1
+    # shares of a just-verified amount: "<amount> as % of <base>"
+    for i, m in enumerate(matches):
+        d = m.deck
+        if m.status not in ("unmatched", "ambiguous") or d.unit != "percent" or " as % of " not in (d.label or ""):
+            continue
+        prev = next((p for p in reversed(matches[:i]) if p.deck.slide_number == d.slide_number
+                     and p.deck.shape_id == d.shape_id and p.deck.paragraph_index == d.paragraph_index
+                     and p.deck.char_start < d.char_start and p.status == "matched"), None)
+        if prev is None or prev.deck.unit != "currency":
+            continue
+        base_key, base_period = _phrase_metric(d.label.split(" as % of ", 1)[1], lookup, config)
+        if not base_key:
+            continue
+        base = lookup.value(base_key, base_period or d.period) if (base_period or d.period) else None
+        if not base or base[1] <= 0:
+            continue
+        amount = canonical_deck(parsed_from_deck(prev.deck), config.unit_scales)[1]
+        if _apply(m, amount / base[1] * 100.0, base[0], f"{prev.deck.raw_text} / {base[0].ref}", config,
+                  other=base[0], confirm_only=True):
+            changed += 1
+    return changed
+
+
+_ACTUAL_COL_RE = re.compile(r"(?:\d{2}|\d{4})\s*A\b|\bactual\b", re.I)
+
+
+def _last_actual(lookup: _Lookup, key: frozenset[str]) -> Period | None:
+    """Latest full-year period whose model column is marked as actual ("FY24A", "2024A", "Actual")."""
+    best = None
+    for mv in lookup.by_tokens.get(key, []):
+        p = parse_key(mv.period) if mv.period else None
+        if p is None or not p.is_full_year or p.year is None or not _ACTUAL_COL_RE.search(mv.col_label or ""):
+            continue
+        if best is None or p.year > best.year:
+            best = p
+    return best
+
+
 def _any_value(lookup: _Lookup, key: frozenset[str]):
     """The single value of a period-less metric (S&U tables, bridges), or None when it is ambiguous."""
     cells = [mv for mv in lookup.by_tokens.get(key, []) if mv.unit in _LEVEL_UNITS]
@@ -365,6 +594,8 @@ def _metric_from_clause(d: DeckNumber, lookup: _Lookup) -> frozenset[str] | None
     return best
 
 
+_SINCE_RE = re.compile(r"\b(?:since|from|vs\.?|versus|compared\s+(?:to|with)|over)\s+((?:FY|CY|Q[1-4]\s*)?'?\d{2,4}[AEFP]?)\b",
+                       re.I)
 _QOQ_RE = re.compile(r"\b(q\s?o\s?q|q/q|sequential|vs\.?\s+prior\s+quarter|quarter[- ]on[- ]quarter)\b", re.I)
 _YOY_RE = re.compile(r"\b(y\s?o\s?y|y/y|year[- ](?:on|over)[- ]year|vs\.?\s+prior\s+year)\b", re.I)
 
@@ -391,6 +622,17 @@ def _verify_delta(m: Match, lookup: _Lookup, config, hints: dict[int, str]) -> b
     p = parse_key(period)
     qoq = bool(_QOQ_RE.search(text)) or (p is not None and p.part.startswith("q") and not _YOY_RE.search(text))
     prior = previous_quarter(period) if qoq else previous_period(period)
+    since = _SINCE_RE.search(d.context or "")
+    if since:
+        # "Gross margin up 190bps since FY21A": the change runs from the named base period to the latest
+        # actual (or the stated period), not over one year.
+        base_period = next((pp for pp, _, _ in find_periods(since.group(1))), None)
+        if base_period is not None and base_period.key != period:
+            prior = base_period.key
+            if not d.period:
+                last_a = _last_actual(lookup, base)
+                if last_a is not None:
+                    period = last_a.key
     if not prior:
         return False
     cur, prev = lookup.value(base, period, units), lookup.value(base, prior, units)

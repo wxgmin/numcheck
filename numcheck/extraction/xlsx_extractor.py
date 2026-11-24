@@ -40,7 +40,7 @@ from numcheck.extraction.xlsx_structure import (
     classify,
 )
 from numcheck.matching.normalizer import UnitHint, explicit_currency_unit, is_fx_rate_label, parse_unit_banner
-from numcheck.models import ModelExtraction, ModelValue, NumCheckInputError, ReviewWarning, SheetInfo
+from numcheck.models import ModelExtraction, ModelText, ModelValue, NumCheckInputError, ReviewWarning, SheetInfo
 from numcheck.numfmt import DIVISOR_SCALE, FormatInfo, parse_number_format
 from numcheck.periods import header_date_period, header_period_key, period_key
 
@@ -515,8 +515,46 @@ def _extract_sheets(wb_v, wb_f, real: str, name: str, streaming: bool, config: C
     for title, g in grids.items():
         tally.uncached[title] = len(_uncached(g))
         _emit_sheet(g, name, config, names, tally, result)
+        try:
+            result.texts.extend(_figure_texts(g, name, config))
+        except Exception:  # noqa: BLE001 - optional evidence only
+            log.debug("text cells skipped on %s", title, exc_info=True)
 
     _add_warnings(result, name, config, tally, recovered, recalc_note)
+
+
+_DIGIT_RE = re.compile(r"\d")
+_MAX_FIGURE_TEXTS = 20000
+
+
+def _figure_texts(g: SheetGrid, workbook: str, config: Config) -> list[ModelText]:
+    """Text cells that contain a digit ("Revolving credit facility ($250m)", "S+275", "6.375%").
+
+    Kept as evidence for deck figures that a workbook states in words rather than in a value cell.
+    """
+    out: list[ModelText] = []
+    by_row: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    by_col: dict[int, list[tuple[int, str]]] = defaultdict(list)
+    for (r, c), v in g.cells.items():
+        if isinstance(v, str) and v.strip():
+            by_row[r].append((c, v.strip()))
+            by_col[c].append((r, v.strip()))
+    for lst in (*by_row.values(), *by_col.values()):
+        lst.sort()
+    for r, items in by_row.items():
+        for c, text in items:
+            if not _DIGIT_RE.search(text) or text.startswith("=") or len(text) > 160:
+                continue
+            hidden = g.hidden or r in g.hidden_rows or c in g.hidden_cols
+            if hidden and not config.include_hidden:
+                continue
+            row_label = next((t for cc, t in items if cc < c), "")
+            col_label = next((t for rr, t in reversed(by_col[c]) if r - 15 <= rr < r and not _DIGIT_RE.search(t)), "")
+            out.append(ModelText(workbook=workbook, sheet_name=g.name, cell_address=f"{get_column_letter(c)}{r}",
+                                 text=text, row=r, col=c, row_label=row_label, col_label=col_label, hidden=hidden))
+            if len(out) >= _MAX_FIGURE_TEXTS:
+                return out
+    return out
 
 
 def _emit_sheet(g: SheetGrid, workbook: str, config: Config, names: dict, tally: _Tally,
@@ -598,8 +636,13 @@ def _to_model_value(lc: LocCell, g: SheetGrid, workbook: str, priority: float, h
     if row_period and "mo" in row_period and re.sub(r"\b[a-z]{3,9}[-\s/']+\d{2,4}\b", "", lc.row_label,
                                                     flags=re.I).strip(" -/"):
         row_period = ""   # "Norvik Logistics Mar-2019": an entry/maturity date attribute, not the row's period
-    period = (header_date_period(lc.col_label) or header_period_key(lc.col_label) or row_period
-              or period_key(lc.section))
+    col_period = header_date_period(lc.col_label) or header_period_key(lc.col_label)
+    if (row_period and col_period and row_period != col_period
+            and re.fullmatch(r"(?:fy|cy|y)\d{2}", row_period) and re.fullmatch(r"(?:fy|cy|y)\d{2}", col_period)):
+        # "Implied EV / FY24A Adj. EBITDA" in a summary block below a FY25E projection header: the row
+        # names its own year, the column header is just the nearest one above.
+        col_period = ""
+    period = col_period or row_period or period_key(lc.section)
     return ModelValue(
         sheet_name=g.name, cell_address=addr, value=value,
         row_label=lc.row_label, col_label=lc.col_label, named_range=named,

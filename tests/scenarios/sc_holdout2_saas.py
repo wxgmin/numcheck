@@ -105,7 +105,7 @@ def _model(path: Path, rule40_25: float) -> str:
     m.block(co, 1, "New-customer cohorts by fiscal quarter of acquisition", "($ in thousands)",
             ["New logos", "Initial ARR", "ARR after 4 quarters", "Net $ retention"], cohort_rows)
     for r in range(6, 6 + len(cohort_rows)):
-        co.cell(r, 3).number_format = K
+        co.cell(r, 3).number_format = "#,##0"   # New logos: a count, not $000
         co.cell(r, 4).number_format = K
         co.cell(r, 5).number_format = K
         co.cell(r, 6).number_format = PCT

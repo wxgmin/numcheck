@@ -323,10 +323,20 @@ def _range_scenario(period, *texts):
     return ""
 
 
-def _range_cells(deck, index, precise, role, *, time_span):
+def _range_cells(deck, index, precise, role, *, time_span, loose=False):
+    """Workbook cells that can be the *role* end of the deck range.
+
+    Strict mode needs the cell's row + column words to equal the deck label's metric words. Loose mode
+    (used only when strict finds no pair) accepts any cell sharing a word with the label, its sentence or
+    the slide title, and yields ``(key, cell, comparison, overlap)`` so the caller can keep the best,
+    unique pair: "10.5x-12.5x FY25E Adj. EBITDA" -> "Trading comparables FY25E Adj. EBITDA" low/high.
+    """
     label = _source_label(deck)
     parts = index.parts(label)
     metric = _range_tokens(parts)
+    if loose:
+        metric = metric | index.tokens_of(deck.context or "") | index.tokens_of(deck.slide_context or deck.slide_title or "")
+        metric = frozenset((metric - DECK_DECORATION) | (metric & {"value", "range"}))
     if not metric:
         return
     period = deck.period or parts.period
@@ -335,19 +345,24 @@ def _range_cells(deck, index, precise, role, *, time_span):
         return
     scenario = scenario or _period_scenario(period, deck.context)
     qualifiers = (parts.qualifiers | normalize_qualifiers(deck.qualifiers, index.config)) - _RANGE_QUALIFIERS
+    if loose:
+        # sentence-level qualifiers ("... of Adjusted EBITDA and equity value per share of $25.73") belong to
+        # other figures in the sentence; only the endpoint's own label qualifies it
+        qualifiers = parts.qualifiers - _RANGE_QUALIFIERS
     positions = {i for token in metric for i in index.postings.get(token, ())}
     for i in positions:
         cell = index.values[i]
         cell_period = index.periods[i]
         if (cell.hidden or (cell.sheet_priority is not None and cell.sheet_priority < 1.0)
                 or cell.unit != deck.unit
-                or (period and period_affinity(period, cell_period) != 1.0)
+                or (period and period_affinity(period, cell_period) != 1.0 and not (loose and not cell_period))
                 or index.is_change(i) != _is_change(deck, label)
                 or ((index.quals[i] - _RANGE_QUALIFIERS) ^ qualifiers) & _SOURCE_QUALIFIERS):
             continue
         cell_scenario = _range_scenario(cell_period, cell.col_label, cell.row_label, cell.named_range,
                                          cell.section_label)
-        if cell_scenario is None or (scenario and scenario != cell_scenario):
+        if cell_scenario is None or (scenario and scenario != cell_scenario
+                                     and not (loose and not cell_period and not cell_scenario)):
             continue
         row = index.parts(cell.row_label)
         col = index.parts(cell.col_label)
@@ -370,14 +385,17 @@ def _range_cells(deck, index, precise, role, *, time_span):
         # A generic range row can identify a per-share valuation entirely in its header.
         if cell_metric == {"share"} and metric == {"value", "share"} and "per share" in label.lower():
             cell_metric = cell_metric | {"value"}
-        if metric != cell_metric:
+        overlap = len(metric & cell_metric)
+        # Loose mode still demands source identity: every word naming the cell must appear on the slide
+        # (label, sentence or title). "Revenue" never reaches a "Subscription Revenue" row.
+        if (not loose and metric != cell_metric) or (loose and (not overlap or not cell_metric <= metric)):
             continue
         comparison = source_comparison(deck, cell, precise)
         if comparison and comparison.ok and not comparison.inferred:
             key = (cell.workbook, cell.sheet_name, cell.section_label, axis, fixed,
                    cell_metric, _range_tokens(header) - _RANGE_ROLE_WORDS[role],
                    () if time_span else (cell_period, cell_scenario), cell.currency, index.quals[i] - _RANGE_QUALIFIERS)
-            yield key, cell, comparison
+            yield (key, cell, comparison, overlap) if loose else (key, cell, comparison)
 
 
 def _explicit_time_span(low, high):
@@ -389,6 +407,92 @@ def _explicit_time_span(low, high):
         and re.fullmatch(r"\s*(?:[-–—]|to|through)\s*", low.context[end:start], re.I)
         for (first, _, end), (second, start, _) in zip(periods, periods[1:])
     )
+
+
+def _loose_range_pair(low, high, index, precise, time_span):
+    """The single best-overlapping low/high cell pair whose values both reconcile, or no pair."""
+    highs = {}
+    for key, cell, check, overlap in _range_cells(high, index, precise, "max", time_span=time_span, loose=True):
+        highs.setdefault(key, []).append((cell, check, overlap))
+    scored = []
+    for key, cell, check, overlap in _range_cells(low, index, precise, "min", time_span=time_span, loose=True):
+        for high_cell, high_check, high_overlap in highs.get(key, ()):
+            if cell.ref == high_cell.ref or (not time_span and check.model_value > high_check.model_value):
+                continue
+            scored.append((min(overlap, high_overlap), (cell, check), (high_cell, high_check)))
+    if not scored:
+        return []
+    best = max(s for s, _, _ in scored)
+    top = [(a, b) for s, a, b in scored if s == best]
+    return top if len(top) == 1 else top[:2]
+
+
+_ADJACENT_SPAN = 12
+_AXIS_CAPTION_RE = re.compile(r"sensitiv|\((?:down|across)\)|\bdown\b.*\bacross\b|\\|\bvs\.?\b", re.I)
+
+
+def _adjacent_value_pair(low, high, index, precise):
+    """Both endpoints found as neighbouring cells of one row or column (a sensitivity-table axis).
+
+    "WACC 8.5%-9.5%" against an unlabelled WACC axis 8.5% / 9.0% / 9.5%: neither cell has a label, but
+    the two displayed values sitting a few cells apart on one axis - and nowhere else together - is the
+    same evidence an analyst uses.
+    """
+    def axis_cell(cell):
+        labels = f"{cell.row_label} {cell.col_label}".strip()
+        return not labels or bool(_AXIS_CAPTION_RE.search(labels)) or not cell.row_label
+
+    want = index.tokens_of(low.label or "") - DECK_DECORATION
+    if not want:
+        return []
+
+    def hits(deck):
+        out = []
+        for cell in index.values:
+            if cell.hidden or cell.unit != deck.unit or cell.is_error or not axis_cell(cell):
+                continue
+            check = source_comparison(deck, cell, precise)
+            if check and check.ok and not check.inferred:
+                out.append((cell, check))
+        return out
+
+    def position(cell):
+        m = re.fullmatch(r"\$?([A-Za-z]{1,3})\$?(\d+)", cell.cell_address or "")
+        if not m:
+            return None
+        col = 0
+        for ch in m.group(1).upper():
+            col = col * 26 + ord(ch) - 64
+        return int(m.group(2)), col
+
+    lows, highs = hits(low), hits(high)
+    if not lows or not highs or len(lows) * len(highs) > 400:
+        return []
+    pairs = []
+    for cell, check in lows:
+        for high_cell, high_check in highs:
+            if (cell.workbook, cell.sheet_name) != (high_cell.workbook, high_cell.sheet_name) or cell.ref == high_cell.ref:
+                continue
+            pa, pb = position(cell), position(high_cell)
+            if pa is None or pb is None:
+                continue
+            same_col = pa[1] == pb[1] and 0 < abs(pa[0] - pb[0]) <= _ADJACENT_SPAN
+            same_row = pa[0] == pb[0] and 0 < abs(pa[1] - pb[1]) <= _ADJACENT_SPAN
+            if not (same_col or same_row) or check.model_value >= high_check.model_value:
+                continue
+            # The axis must be named for what the slide says it is ("WACC (down) / terminal growth (across)").
+            r0, r1 = min(pa[0], pb[0]) - 2, max(pa[0], pb[0]) + 2
+            c0, c1 = min(pa[1], pb[1]) - 2, max(pa[1], pb[1]) + 2
+            near = set()
+            for other in index.values:
+                if (other.workbook, other.sheet_name) != (cell.workbook, cell.sheet_name):
+                    continue
+                po = position(other)
+                if po and r0 <= po[0] <= r1 and c0 <= po[1] <= c1:
+                    near |= index.tokens_of(f"{other.row_label} {other.col_label}")
+            if want & near:
+                pairs.append(((cell, check), (high_cell, high_check)))
+    return pairs if len(pairs) == 1 else pairs[:2]
 
 
 def verify_range_pairs(matches, index, precise, *, recover=False):
@@ -428,6 +532,10 @@ def verify_range_pairs(matches, index, precise, *, recover=False):
                         break
                 if len(pairs) > 1:
                     break
+            if not pairs and recover:
+                pairs = _loose_range_pair(low.deck, high.deck, index, precise, time_span)
+            if not pairs and recover and not time_span:
+                pairs = _adjacent_value_pair(low.deck, high.deck, index, precise)
             if len(pairs) != 1:
                 continue
             if not recover and (low.model is not pairs[0][0][0] or high.model is not pairs[0][1][0]):
