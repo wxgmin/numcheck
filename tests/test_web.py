@@ -404,13 +404,23 @@ def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_pa
         assert moved["saved_value"] == "269.9" and moved["label_column"] == "A"
         assert any(c["address"] == "A11" and c["text"] == "Adjusted EBITDA"
                    for row in moved["rows"] for c in row["cells"])
+        cagr = next(m for m in result["matches"] if m["raw_text"] == "7.8%" and m["slide_number"] == 2)
+        assert (cagr["status"], cagr["method"]) == ("matched", "derived")
+        assert {ref.rsplit("!", 1)[-1] for ref in cagr["derivation_cells"]} == {"F10", "I10"}
+        workbook = base + "/evidence/workbook"
+        inputs = client.get(workbook, query_string={"figure": cagr["deck_uid"]}).get_json()
+        assert inputs["address"] == "I10" and "actual to forecast" in inputs["derivation"]
+        start_ref = next(ref for ref in cagr["derivation_cells"] if ref.endswith("!F10"))
+        start = client.get(workbook, query_string={"figure": cagr["deck_uid"], "cell": start_ref}).get_json()
+        assert start["address"] == "F10" and start["match_status"] == "matched"
         files = client.get(base + "/inputs").get_json()["files"]
         assert files[0]["sha256"] == hashlib.sha256(deck_bytes).hexdigest()
         assert client.delete(base, headers=HDR).status_code == 200
         assert client.get(slide["download"]).status_code == 404
 
 
-def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
+@pytest.mark.parametrize("upload", [False, True], ids=["demo", "two-workbooks"])
+def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch, upload):
     calls = []
 
     def rank(entries, config, warnings):
@@ -423,7 +433,26 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
     monkeypatch.setattr("numcheck.matching.source_search.resolve_ambiguous", rank)
     app = create_app()
     with app.test_client() as client:
-        job = client.post("/api/demo", headers=HDR).get_json()["job_id"]
+        if upload:
+            other = Workbook()
+            other.active.append(["Unrelated metric", "FY24"])
+            other.active.append(["Headcount", 10])
+            other_bytes = io.BytesIO()
+            other.save(other_bytes)
+            other_bytes.seek(0)
+            deck = ASSET_DIR / "Project_Keystone_Board_Materials.pptx"
+            current = ASSET_DIR / "Keystone_Model_v4.xlsx"
+            prior = ASSET_DIR / "Keystone_Model_v3_prior.xlsx"
+            started = client.post("/api/jobs", headers=HDR, data={
+                "deck": (io.BytesIO(deck.read_bytes()), deck.name),
+                "models": [(other_bytes, "Other.xlsx"), (io.BytesIO(current.read_bytes()), "Forecast.xlsx")],
+                "model_old": (io.BytesIO(prior.read_bytes()), prior.name),
+                "source_search": "false",
+            })
+        else:
+            started = client.post("/api/demo", headers=HDR)
+        assert started.status_code == 202
+        job = started.get_json()["job_id"]
         assert _wait(client, job)["status"] == "done"
         base = f"/api/jobs/{job}"
         original = client.get(base + "/result").get_json()
@@ -440,6 +469,9 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
         assert view["candidate_check"] and view["ai_source"] == ai["recommended"]
         assert ai["recorded_source"]["address"] == view["address"]
         assert ai["recorded_source"]["sheet"] == view["sheet"]
+        if upload:
+            assert ai["recorded_source"]["slot"] == "model-1"
+            assert ai["recorded_source"]["file"] == "Forecast.xlsx"
         assert len(view["sources"]) == local["count"]
         assert any(c["selected"] and c["ref"] == ai["recommended"] for c in view["sources"])
 
@@ -452,7 +484,67 @@ def test_source_discovery_is_local_until_asked_to_use_ai(tmp_path, monkeypatch):
         view = client.get(base + "/evidence/workbook" + stale_query).get_json()
         assert view["address"] == "C20" and "differs" in view["candidate_check"]
         assert len(view["sources"]) == 4
-        assert client.get(base + "/result").get_json() == original
+        suggested = client.get(base + "/result").get_json()
+        suggested_range = next(m for m in suggested["matches"] if m["deck_uid"] == stale["deck_uid"])
+        assert suggested_range["status"] == stale["status"]
+        assert suggested_range["method"] == "AI suggestion"
+        selected = next(cell for cell in view["sources"] if cell["selected"])
+        assert suggested_range["model_value"] == selected["display_value"]
+        assert suggested_range["best_source"] == selected["ref"]
+        assert suggested["coverage"] == original["coverage"]
+        assert len(suggested["ai_activity"]) == 2
+        assert all(item["outcome"] == "suggested" for item in suggested["ai_activity"])
+        assert all(not item["reviewer_confirmed"] for item in suggested["ai_activity"])
+        assert next(item for item in suggested["ai_activity"] if item["deck_uid"] == stale["deck_uid"])["model_value"] == selected["display_value"]
+
+        # A single cell cannot confirm a range endpoint independently of its pair.
+        assert client.post(base + "/evidence/confirmation" + stale_query, headers=HDR,
+                           data={"cell": selected["ref"]}).status_code == 422
+
+        def figure(data):
+            return next(m for m in data["matches"] if m["deck_uid"] == issue["deck_uid"])
+
+        growth_query = f"?figure={issue['deck_uid']}&issue={issue['id']}"
+        growth_view = client.get(base + "/evidence/workbook" + growth_query).get_json()
+        assert growth_view["can_confirm"]
+        reconciles = next(cell for cell in growth_view["sources"] if cell["selected"])
+        differs = next(cell for cell in growth_view["sources"] if cell["ref"].endswith("Segments!F20"))
+        endpoint = base + "/evidence/confirmation" + growth_query
+        assert client.post(endpoint, headers=HDR, data={"cell": "not-a-candidate"}).status_code == 422
+        mismatch = client.post(endpoint, headers=HDR, data={"cell": differs["ref"]}).get_json()
+        assert figure(mismatch)["status"] == "mismatch"
+        assert figure(mismatch)["method"] == "confirmed"
+        assert figure(mismatch)["source_cell"] == differs["ref"]
+        finding = next(i for i in mismatch["issues"]
+                       if i["deck_uid"] == issue["deck_uid"] and i["issue_type"] == "mismatch")
+        assert finding["expected_value"] == differs["display_value"]
+        assert finding["source_cell"] == differs["ref"]
+        assert mismatch["revision"] > suggested["revision"]
+        assert not any(item["reviewer_confirmed"] for item in mismatch["ai_activity"])
+        ai_evidence = client.get(base + "/evidence/workbook", query_string={
+            "figure": issue["deck_uid"], "cell": reconciles["ref"],
+        }).get_json()
+        assert ai_evidence["sources"][-1]["selected"]
+        assert figure(client.get(base + "/download/report.json").get_json())["status"] == "mismatch"
+        assert client.get(base + "/evidence/workbook" + growth_query).get_json()["confirmed"]
+
+        undone = client.post(endpoint, headers=HDR, data={"undo": "true"}).get_json()
+        assert figure(undone) == figure(suggested)
+        assert undone["coverage"] == original["coverage"]
+        assert undone["issues"] == original["issues"]
+
+        verified = client.post(endpoint, headers=HDR, data={"cell": reconciles["ref"]}).get_json()
+        assert figure(verified)["status"] == "matched"
+        assert figure(verified)["model_value"] == reconciles["display_value"]
+        assert verified["coverage"]["verified"] == original["coverage"]["verified"] + 1
+        by_slide = {entry["slide_number"]: entry["verified"]
+                    for entry in original["coverage"]["per_slide"]}
+        assert next(entry["verified"] for entry in verified["coverage"]["per_slide"]
+                    if entry["slide_number"] == issue["slide_number"]) == by_slide[issue["slide_number"]] + 1
+        assert all(i["id"] != issue["id"] for i in verified["issues"])
+        confirmed = next(item for item in verified["ai_activity"] if item["deck_uid"] == issue["deck_uid"])
+        assert confirmed["reviewer_confirmed"] and confirmed["current_source"]
+        assert confirmed["source_cell"] == reconciles["ref"]
 
 
 def test_bulk_source_review_updates_findings_coverage_and_exports(tmp_path, monkeypatch):
@@ -561,6 +653,15 @@ def test_ai_automatically_searches_and_checks_reconciling_sources_for_upload_and
             result = client.get(f"/api/jobs/{job}/result").get_json()
             assert result["settings"]["source_search"] is True
             assert result["source_review"]["ai_reviewed"] == result["source_review"]["verified"] == 2
+            assert len(result["ai_activity"]) == 2
+            assert all(entry["outcome"] == "used" and entry["current_source"] and entry["status"] == "matched"
+                       for entry in result["ai_activity"])
+            source = result["ai_activity"][0]
+            base = f"/api/jobs/{job}/evidence"
+            confirmed = client.post(base + "/confirmation", query_string={"figure": source["deck_uid"]},
+                                    headers=HDR, data={"cell": source["source_cell"]}).get_json()
+            assert next(item for item in confirmed["ai_activity"]
+                        if item["deck_uid"] == source["deck_uid"])["reviewer_confirmed"]
             assert {row["source_cell"].split("] ")[-1] for row in result["matches"]} == {
                 "Aerospace Components!B2", "Aerospace Components!B3"}
         assert len(calls) == 2

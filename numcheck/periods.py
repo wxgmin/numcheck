@@ -317,30 +317,41 @@ def previous_period(key: str) -> str:
     return Period(p.basis, p.year - 1, p.part).key
 
 
-_SPAN_RE = re.compile(
-    r"((?:fy|cy)?\s*'?(?:\d{4}|\d{2})[aepbf]?)\s*(?:-|–|—|to|through|‑)\s*((?:fy|cy)?\s*'?(?:\d{4}|\d{2})[aepbf]?)",
-    re.I,
-)
+_SPAN_YEAR = r"((?:(?:fy|cy)\s*)?['’]?(?:\d{4}|\d{2})[aepbf]?)"
+_SPAN_END = r"(?![\w%]|\.\d)"
+_SPAN_RE = re.compile(rf"(?<![\w.$]){_SPAN_YEAR}\s*(?:-|–|—|‑|to\b|through\b)\s*{_SPAN_YEAR}{_SPAN_END}", re.I)
+_BETWEEN_RE = re.compile(rf"\bbetween\s+{_SPAN_YEAR}\s+and\s+{_SPAN_YEAR}{_SPAN_END}", re.I)
 
 
 def parse_span(text: str) -> tuple[str, str, int] | None:
-    """Parse a period span like "FY22-FY24", "2021–2024E", "'21-'24".
+    """Parse a period span like "FY22-FY24", "2021–2024E", "'21-'24", "between 2022 and 2024".
 
     Returns ``(start_key, end_key, n_years)`` or ``None``. Used for CAGR.
     """
-    for m in _SPAN_RE.finditer(text or ""):
-        a_txt, b_txt = m.group(1), m.group(2)
-        pa = parse_period(a_txt if re.search(r"[a-z']", a_txt, re.I) or len(a_txt.strip()) == 4 else "'" + a_txt.strip())
-        pb = parse_period(b_txt if re.search(r"[a-z']", b_txt, re.I) or len(b_txt.strip()) == 4 else "'" + b_txt.strip())
-        if not pa or not pb or pa.year is None or pb.year is None:
+    text = text or ""
+    partial = [(start, end) for p, start, end in find_periods(text) if not p.is_full_year]
+    found: set[tuple[str, str, int]] = set()
+    for match in (*_BETWEEN_RE.finditer(text), *_SPAN_RE.finditer(text)):
+        if any(match.start(group) < end and start < match.end(group)
+               for group in (1, 2) for start, end in partial):
+            continue  # A year fragment inside a quarterly or monthly period is not an annual endpoint.
+        a_txt, b_txt = match.groups()
+        if not any(re.search(r"\d{4}|fy|cy|['’]", token, re.I) for token in (a_txt, b_txt)):
+            continue  # "10 to 20" is not a year span.
+        pa = parse_period(re.sub(r"^(?=\d{2}[aepbf]?$)", "'", a_txt, flags=re.I))
+        pb = parse_period(re.sub(r"^(?=\d{2}[aepbf]?$)", "'", b_txt, flags=re.I))
+        if not pa or not pb or not pa.is_full_year or not pb.is_full_year:
             continue
         if pb.year <= pa.year:
             continue
+        basis_a = pa.basis if pa.basis != "y" else pb.basis
         basis_b = pb.basis if pb.basis != "y" else pa.basis
-        start = Period(pa.basis, pa.year).key
+        if basis_a != basis_b:
+            continue
+        start = Period(basis_a, pa.year).key
         end = Period(basis_b, pb.year).key
-        return start, end, pb.year - pa.year
-    return None
+        found.add((start, end, pb.year - pa.year))
+    return next(iter(found)) if len(found) == 1 else None
 
 
 def looks_like_year(token: str) -> bool:

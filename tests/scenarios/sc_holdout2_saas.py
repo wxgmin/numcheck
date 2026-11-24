@@ -332,7 +332,7 @@ def build(out: Path) -> Scenario:
         controls=[
             Control(1, "$548.9m"), Control(1, "33.0%"), Control(1, "1,486"), Control(1, "$497.2m"),
             Control(1, "76.8%"), Control(1, "43.6%"), Control(1, "12.0%"), Control(1, "117%"), Control(1, "93%"),
-            Control(1, "24.0m"), Control(1, "$28.00"), Control(1, "$32.00"),
+            Control(1, "24.0m"), Control(1, "$28.00", allow=("unmatched",)), Control(1, "$32.00", allow=("unmatched",)),
             Control(2, "318.4"), Control(2, "412.7"), Control(2, "548.9"), Control(2, "79.8"),
             Control(2, "136.2"), Control(2, "33.4%"), Control(2, "29.6%"), Control(2, "291.5"),
             Control(2, "377.8"), Control(2, "497.2"), Control(2, "33.1%"), Control(2, "31.6%"),

@@ -126,6 +126,34 @@ Inspect. This action can identify a source whose value differs when the label,
 period and scope support it. The provider receives masked labels and a local
 comparison category. Coverage and report downloads update when a source is verified.
 
+### Calculated figures
+
+When a rate or multiple has no dedicated model cell, NumCheck can calculate it
+from labelled Excel inputs. **Inspect** shows the calculation and lets you open
+each input cell.
+
+| Metric | Workbook inputs and calculation |
+|---|---|
+| Year-over-year and cumulative growth | Ending value ÷ starting value − 1 |
+| CAGR | (Ending value ÷ starting value) raised to 1 ÷ elapsed years, minus 1 |
+| Percentage-point or basis-point change | Current rate minus prior rate |
+| Gross, operating, EBITDA, net and free cash flow margins | Respective profit or cash flow ÷ revenue |
+| FCF conversion and effective tax rate | FCF ÷ EBITDA or tax expense ÷ pre-tax income |
+| ROE, ROA and ROIC | Net income ÷ average equity or average assets, or NOPAT ÷ average invested capital |
+| Dividend payout and yield | Dividends ÷ net income or dividends per share ÷ share price |
+| Valuation, leverage and interest coverage multiples | Relevant value, debt, price or EBITDA divided by its labelled base |
+| Offer premium | Offer price ÷ unaffected price − 1 |
+| Current and quick ratios | Current assets or quick assets ÷ current liabilities |
+| MOIC | Total investment value ÷ invested capital |
+
+Explicit annual-rate wording selects CAGR. Growth stated across a date range
+without annual-rate wording uses the cumulative change. A forecast CAGR with
+no start date can reconcile when the slide supplies independently verified
+actual and forecast figures for the same workbook series. If that calculation
+does not reconcile, the figure stays unresolved. Optional OCR can supply slide
+text for these checks. AI source assistance ranks labels, and NumCheck performs
+the calculations locally.
+
 Select a provider, enter its model ID and API key if
 needed, then use **Check connection**. The check sends a synthetic label pair
 and exercises the selected model. OpenAI and Anthropic use platform API

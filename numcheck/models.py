@@ -212,6 +212,12 @@ class Match:
     source_options: list[tuple[ModelValue, str]] | None = field(default=None, repr=False)
     source_ai_options: list[tuple[ModelValue, str]] = field(default_factory=list, repr=False)
     source_suggestion: str = ""
+    ai_sources: tuple[tuple[ModelValue, str], ...] = field(default_factory=tuple, repr=False)
+    derivation_inputs: tuple[ModelValue, ...] = field(default_factory=tuple, repr=False)
+
+    def record_ai_source(self, value: ModelValue, outcome: str) -> None:
+        if not any(cell.ref == value.ref and decision == outcome for cell, decision in self.ai_sources):
+            self.ai_sources += ((value, outcome),)
 
 
 @dataclass

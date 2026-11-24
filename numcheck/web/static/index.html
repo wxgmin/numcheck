@@ -26,67 +26,30 @@
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
     <span id="themeLabel">Dark</span>
   </button>
-  <button type="button" class="icon-btn" id="helpBtn" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
+  <button type="button" class="icon-btn" id="helpBtn" aria-label="Review guide" data-tip="Open the review guide and keyboard shortcuts (?)">
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8"/><path d="M12 17h.01"/></svg>
+    <span>Help</span>
   </button>
 </header>
 
 <div class="layout" id="layout" data-view="empty">
   <header class="setup-intro" id="setupIntro">
     <h1>Check PowerPoint against Excel</h1>
-    <p>Check PowerPoint figures against the workbooks behind them and trace discrepancies to their source cells.</p>
+    <p>Add a PowerPoint deck and the Excel files behind it. NumCheck flags figures to investigate and shows the source cells it finds.</p>
     <a class="demo-jump" href="#emptyView">Jump to the demo</a>
   </header>
   <div class="inline-error run-error" id="formError" role="alert" tabindex="-1" hidden></div>
   <aside class="panel" id="setupPanel" aria-labelledby="upload-title">
-    <h2 class="section-title" id="upload-title">Review your files</h2>
     <form id="reviewForm" novalidate>
-
-      <div class="dz" data-upload-slot="deck">
-        <div class="dz-head"><span class="dz-title" id="lbl-deck">PowerPoint deck</span><span class="dz-opt">Required</span></div>
-        <p class="dz-hint">Drop a .pptx or .pptm file, or browse.</p>
-        <div class="dz-actions">
-          <input class="visually-hidden" type="file" id="in-deck" accept=".pptx,.pptm" aria-labelledby="lbl-deck">
-          <label class="btn small" for="in-deck">Choose file</label>
-        </div>
-        <ul class="files" id="files-deck"></ul>
-      </div>
-
-      <div class="dz" data-upload-slot="models">
-        <div class="dz-head"><span class="dz-title" id="lbl-models">Current Excel models</span><span class="dz-opt">Required</span></div>
-        <p class="dz-hint">Drop one or more .xlsx or .xlsm files, or browse.</p>
-        <div class="dz-actions">
-          <input class="visually-hidden" type="file" id="in-models" accept=".xlsx,.xlsm" multiple aria-labelledby="lbl-models">
-          <label class="btn small" for="in-models">Choose files</label>
-        </div>
-        <ul class="files" id="files-models"></ul>
-      </div>
-
-      <div class="dz" data-upload-slot="old">
-        <div class="dz-head"><span class="dz-title" id="lbl-old">Prior Excel model</span><span class="dz-opt">Optional</span></div>
-        <p class="dz-hint">Add an earlier version to flag stale figures.</p>
-        <div class="dz-actions">
-          <input class="visually-hidden" type="file" id="in-old" accept=".xlsx,.xlsm" aria-labelledby="lbl-old">
-          <label class="btn small" for="in-old">Choose file</label>
-        </div>
-        <ul class="files" id="files-old"></ul>
-      </div>
-
-      <div class="field-heading">
-        <span>How NumCheck works</span>
-        <button type="button" class="tip-trigger" aria-label="How NumCheck checks figures" aria-describedby="tip-how">?</button>
-        <span class="tip-text" role="tooltip" id="tip-how">NumCheck reads slide figures and searches Excel using metric labels, periods, units, and layout. It compares the source value at the slide’s displayed precision. Inspect opens the original evidence. A verified figure reconciles to the supplied workbook. NumCheck flags figures it cannot trace. Local review needs no AI account or credits.</span>
-      </div>
       <div class="ai-review" id="setupAiProvider">
         <div class="field-heading">
           <label class="ai-toggle" for="llm-auto">
             <input type="checkbox" id="llm-auto" aria-describedby="ai-review-status">
             Use AI during reviews
           </label>
-          <button type="button" class="tip-trigger" aria-label="What AI adds" aria-describedby="tip-ai">?</button>
-          <span class="tip-text" role="tooltip" id="tip-ai">AI can suggest which candidate label best describes a figure. You can also ask on demand from Inspect. Cloud providers receive labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. Requests use the selected provider allowance.</span>
+          <button type="button" class="tip-trigger" aria-label="What AI adds" data-tip="AI can suggest which candidate label best describes a figure. You can also ask on demand from Inspect. Cloud providers receive labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. Requests use the selected provider allowance.">?</button>
         </div>
-        <p class="note">Searches Excel first, then asks AI to compare the labels of cells that reconcile.</p>
+        <p class="note">AI helps identify the right Excel source when a figure is hard to match.</p>
         <p class="note" id="ai-review-status" role="status">Off by default.</p>
         <details class="settings ai-settings" id="ai-settings">
           <summary>
@@ -118,70 +81,102 @@
               </div>
               <p class="note" id="provider-setup"></p>
               <label for="llm-redact">Terms to redact <span class="note">(optional)</span></label>
-              <textarea id="llm-redact" rows="2" maxlength="2000" placeholder="One client, deal or project name per line"></textarea>
+              <textarea id="llm-redact" data-tip="List the names you want removed before sending labels to your AI provider" rows="2" maxlength="2000" placeholder="One client, deal or project name per line"></textarea>
               <button class="btn small" id="test-provider" type="button">Check connection</button>
               <p class="note" id="provider-status" role="status"></p>
             </div>
           </div>
         </details>
       </div>
-      <details class="settings" id="settings">
-        <summary>
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
-          Review settings
-        </summary>
-        <div class="settings-body">
-          <div class="field">
-            <div class="field-heading"><label for="set-rounding">Rounding</label>
-              <button type="button" class="tip-trigger" aria-label="About rounding" aria-describedby="tip-rounding">?</button>
-              <span class="tip-text" role="tooltip" id="tip-rounding">Round uses the precision shown on the slide. Round or truncate also accepts digits cut off without rounding, for example 12.39 displayed as 12.3.</span>
-            </div>
-            <select id="set-rounding">
-              <option value="round">Round</option>
-              <option value="round_or_truncate">Round or truncate</option>
-            </select>
-          </div>
-          <div class="field">
-            <div class="field-heading"><label for="set-base">Base period</label>
-              <button type="button" class="tip-trigger" aria-label="About base period" aria-describedby="tip-base">?</button>
-              <span class="tip-text" role="tooltip" id="tip-base">Leave blank to infer from the deck. Enter a period such as FY24 or LTM as the fallback for numbers without an explicit period.</span>
-            </div>
-            <input type="text" id="set-base" maxlength="12" placeholder="FY24" autocomplete="off">
-            <p class="note">Assumed for numbers with no period. Leave blank to infer.</p>
-          </div>
-          <div class="field">
-            <div class="field-heading"><label for="set-tol">Extra tolerance</label>
-              <button type="button" class="tip-trigger" aria-label="About extra tolerance" aria-describedby="tip-tol">?</button>
-              <span class="tip-text" role="tooltip" id="tip-tol">Additional relative allowance beyond display rounding. Enter 0.005 for 0.5%. Leave blank for the default.</span>
-            </div>
-            <input type="number" id="set-tol" min="0" max="0.1" step="0.001" placeholder="0">
-            <p class="note">Relative, as a fraction (0.005 is 0.5%). Maximum 0.1.</p>
-          </div>
-          <div class="check">
-            <input type="checkbox" id="source-search-auto" checked>
-            <div><label for="source-search-auto">Search for possible sources automatically</label>
-            <span class="note" id="source-search-note">Searches the current Excel files locally for every unresolved figure.</span></div>
-          </div>
-          <div class="check">
-            <input type="checkbox" id="set-require-label" checked>
-            <div><label for="set-require-label">Require label evidence</label>
-            <span class="note">Leave figures unresolved when Excel sources disagree or only the number matches.</span></div>
-          </div>
-          <div class="check">
-            <input type="checkbox" id="set-annotate" checked>
-            <div><label for="set-annotate">Annotated deck</label>
-            <span class="note">Write a copy of the deck with flagged numbers marked.</span></div>
-          </div>
-          <div class="check">
-            <input type="checkbox" id="set-ocr">
-            <div><label for="set-ocr">Read numbers in images (OCR)</label>
-            <span class="note" id="ocr-note">Reads embedded pictures locally when OCR is installed.</span></div>
-          </div>
+      <h2 class="section-title" id="upload-title">Add your files</h2>
+
+      <div class="dz" data-upload-slot="deck">
+        <div class="dz-head"><span class="dz-title" id="lbl-deck">PowerPoint deck</span><span class="dz-opt">Required</span></div>
+        <p class="dz-hint">The presentation you want to check (.pptx or .pptm).</p>
+        <div class="dz-actions">
+          <input class="visually-hidden" type="file" id="in-deck" accept=".pptx,.pptm" aria-labelledby="lbl-deck">
+          <label class="btn small" for="in-deck">Choose PowerPoint</label>
         </div>
+        <ul class="files" id="files-deck"></ul>
+      </div>
+
+      <div class="dz" data-upload-slot="models">
+        <div class="dz-head"><span class="dz-title" id="lbl-models">Current Excel models</span><span class="dz-opt">Required</span></div>
+        <p class="dz-hint">Add the latest workbook or workbooks used to prepare the deck (.xlsx or .xlsm).</p>
+        <div class="dz-actions">
+          <input class="visually-hidden" type="file" id="in-models" accept=".xlsx,.xlsm" multiple aria-labelledby="lbl-models">
+          <label class="btn small" for="in-models">Choose Excel files</label>
+        </div>
+        <ul class="files" id="files-models"></ul>
+      </div>
+
+      <details class="settings" id="optionalSetup">
+        <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>Optional files and settings</summary>
+        <div class="dz" data-upload-slot="old">
+          <div class="dz-head"><span class="dz-title" id="lbl-old">Prior Excel model</span><span class="dz-opt">Optional</span></div>
+          <p class="dz-hint">Add an earlier version to flag stale figures.</p>
+          <div class="dz-actions">
+            <input class="visually-hidden" type="file" id="in-old" accept=".xlsx,.xlsm" aria-labelledby="lbl-old">
+            <label class="btn small" for="in-old">Choose file</label>
+          </div>
+          <ul class="files" id="files-old"></ul>
+        </div>
+        <details class="settings" id="settings">
+          <summary>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            How figures are checked
+          </summary>
+          <div class="settings-body">
+            <div class="field">
+              <div class="field-heading"><label for="set-rounding">Rounding</label>
+                <button type="button" class="tip-trigger" aria-label="About rounding" data-tip="Round uses the precision shown on the slide. Round or truncate also accepts digits cut off without rounding, for example 12.39 displayed as 12.3.">?</button>
+              </div>
+              <select id="set-rounding">
+                <option value="round">Round</option>
+                <option value="round_or_truncate">Round or truncate</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="field-heading"><label for="set-base">Base period</label>
+                <button type="button" class="tip-trigger" aria-label="About base period" data-tip="Leave blank to infer from the deck. Enter a period such as FY24 or LTM as the fallback for numbers without an explicit period.">?</button>
+              </div>
+              <input type="text" id="set-base" maxlength="12" placeholder="FY24" autocomplete="off">
+              <p class="note">Assumed for numbers with no period. Leave blank to infer.</p>
+            </div>
+            <div class="field">
+              <div class="field-heading"><label for="set-tol">Extra tolerance</label>
+                <button type="button" class="tip-trigger" aria-label="About extra tolerance" data-tip="Allow an extra difference after rounding. Enter a decimal fraction, such as 0.005 for 0.5%.">?</button>
+              </div>
+              <input type="number" id="set-tol" min="0" max="0.1" step="0.001" aria-describedby="tolerance-note" placeholder="0">
+              <p class="note" id="tolerance-note">Enter a decimal fraction. For 0.5%, enter 0.005.</p>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="source-search-auto" checked>
+              <div><label for="source-search-auto">Search for possible sources automatically</label>
+              <span class="note" id="source-search-note">Searches the current Excel files locally for every unresolved figure.</span></div>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="set-require-label" checked>
+              <div><label for="set-require-label">Require label evidence</label>
+              <span class="note">Leave figures unresolved when Excel sources disagree or only the number matches.</span></div>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="set-annotate" checked>
+              <div><label for="set-annotate">Annotated deck</label>
+              <span class="note">Write a copy of the deck with flagged numbers marked.</span></div>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="set-ocr">
+              <div><label for="set-ocr">Read numbers in images (OCR)</label>
+              <span class="note" id="ocr-note">Reads embedded pictures locally when OCR is installed.</span></div>
+            </div>
+          </div>
+        </details>
+
       </details>
 
       <div class="form-actions">
-        <button type="submit" class="btn primary block" id="runBtn">Run review</button>
+        <button type="submit" class="btn primary block" id="runBtn" data-tip="Check the PowerPoint against the selected Excel files">Start review</button>
       </div>
 
     </form>
@@ -192,7 +187,7 @@
     <section class="demo-panel" id="emptyView" aria-labelledby="demo-title">
       <h2 class="section-title" id="demo-title">Try the Keystone demo</h2>
       <p class="demo-intro">Review a fictional board deck with operating forecasts, a DCF and two versions of its Excel model.</p>
-      <button type="button" class="btn primary" id="demoBtn">Run demo review</button>
+      <button type="button" class="btn primary" id="demoBtn" data-tip="Run a review with the included PowerPoint and Excel files">Try a sample review</button>
       <figure class="trace-example">
         <figcaption>Example finding <span>Slide 3 · Financial overview</span></figcaption>
         <p class="trace-metric">FY25E adjusted EBITDA</p>
@@ -230,42 +225,55 @@
             <p class="run-meta" id="runMeta"></p>
           </div>
           <div class="review-actions">
-            <a class="btn findings-jump" href="#resultTabs">View findings</a>
-            <button type="button" class="btn" id="newReviewBtn">Back to setup</button>
+            <a class="btn primary findings-jump" id="reviewFigures" href="#resultTabs">Review figures</a>
+            <button type="button" class="btn" id="newReviewBtn" data-tip="Return to your files and review settings">Back to files</button>
           </div>
         </div>
         <div class="kpis" id="kpis"></div>
+        <div class="figure-progress">
+          <span id="figureProgressText" role="status"></span>
+          <progress id="figureProgress" aria-label="Figures checked by reviewer" max="1" value="0"></progress>
+        </div>
         <section class="source-review" id="sourceReview" aria-labelledby="sourceReviewTitle" hidden>
           <div>
-            <h2 id="sourceReviewTitle">Find sources across the review</h2>
+            <h2 id="sourceReviewTitle">Look for missing sources</h2>
             <p class="note" id="sourceReviewStatus" role="status"></p>
           </div>
           <div class="review-actions">
-            <button type="button" class="btn small" id="findAllSources">Find possible sources for all</button>
-            <button type="button" class="btn small inspect-btn" id="askAllSources" title="Uses your AI provider to compare masked labels and periods">Ask AI for sources</button>
+            <button type="button" class="btn small" id="findAllSources" data-tip="Search your Excel files for candidates for every unresolved figure">Search Excel</button>
+            <button type="button" class="btn small inspect-btn" id="askAllSources" data-tip="Use your AI provider to compare masked candidate labels and periods">Ask AI for sources</button>
           </div>
         </section>
-        <div class="review-files">
-          <div>
-            <h2>Export the review</h2>
-            <div class="downloads" id="downloads"></div>
+        <details class="settings review-export">
+          <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>Download reports and review notes</summary>
+          <div class="review-files">
+            <div>
+              <h2>Reports and exports</h2>
+              <div class="downloads" id="downloads"></div>
+              <div class="review-actions">
+                <button type="button" class="btn small" id="exportLog" data-tip="Download all findings and their review statuses and notes as a spreadsheet-ready CSV">Export review log (CSV)</button>
+                <button type="button" class="btn small" id="exportHandoff" data-tip="Download a JSON file with findings, review decisions, source references, and input file details">Export review handoff</button>
+              </div>
+            </div>
+            <div id="originalsGroup" hidden>
+              <h2>Original demo files</h2>
+              <div class="downloads" id="originals"></div>
+            </div>
           </div>
-          <div id="originalsGroup" hidden>
-            <h2>Original demo files</h2>
-            <div class="downloads" id="originals"></div>
-          </div>
-        </div>
+        </details>
       </div>
       <div class="warn-list" id="warnList"></div>
 
       <div class="tabs" id="resultTabs" role="tablist" aria-label="Results">
-        <button type="button" class="tab" role="tab" id="tab-issues" aria-controls="pane-issues" aria-selected="true" data-tab="issues">Issues<span class="count" id="cnt-issues"></span></button>
-        <button type="button" class="tab" role="tab" id="tab-slides" aria-controls="pane-slides" aria-selected="false" tabindex="-1" data-tab="slides">By slide<span class="count" id="cnt-slides"></span></button>
-        <button type="button" class="tab" role="tab" id="tab-coverage" aria-controls="pane-coverage" aria-selected="false" tabindex="-1" data-tab="coverage">Coverage<span class="count" id="cnt-coverage"></span></button>
-        <button type="button" class="tab" role="tab" id="tab-warnings" aria-controls="pane-warnings" aria-selected="false" tabindex="-1" data-tab="warnings">Warnings<span class="count" id="cnt-warnings"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-coverage" aria-controls="pane-coverage" aria-selected="true" data-tab="coverage" data-tip="See which figures were verified and which still need a source">All figures<span class="count" id="cnt-coverage"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-issues" aria-controls="pane-issues" aria-selected="false" tabindex="-1" data-tab="issues" data-tip="Figures NumCheck flagged for review">Findings<span class="count" id="cnt-issues"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-slides" aria-controls="pane-slides" aria-selected="false" tabindex="-1" data-tab="slides" data-tip="Browse findings in presentation order">By slide<span class="count" id="cnt-slides"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-ai" aria-controls="pane-ai" aria-selected="false" tabindex="-1" data-tab="ai">AI activity<span class="count" id="cnt-ai"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-warnings" aria-controls="pane-warnings" aria-selected="false" tabindex="-1" data-tab="warnings" data-tip="See file and extraction warnings that may affect the review">Warnings<span class="count" id="cnt-warnings"></span></button>
       </div>
 
-      <div role="tabpanel" id="pane-issues" aria-labelledby="tab-issues">
+      <div role="tabpanel" id="pane-issues" aria-labelledby="tab-issues" hidden>
+        <p class="note findings-help">Open a finding to see why it was flagged, add a note, or mark it resolved. Use Inspect to compare the slide with Excel.</p>
         <div class="toolbar">
           <div class="chips" id="sevChips" role="group" aria-label="Severity"></div>
           <details class="type-filter">
@@ -275,11 +283,11 @@
         </div>
         <div class="toolbar">
           <label class="visually-hidden" for="issueSearch">Search issues</label>
-          <input class="search" type="search" id="issueSearch" placeholder="Search issues  ( / )" autocomplete="off">
+          <input class="search" type="search" id="issueSearch" placeholder="Search findings" data-tip="Search by label, value, or source cell (/)" autocomplete="off">
           <label class="visually-hidden" for="slideFilter">Slide</label>
-          <select id="slideFilter"><option value="">All slides</option></select>
+          <select id="slideFilter" data-tip="Show findings from a specific slide"><option value="">All slides</option></select>
           <label class="visually-hidden" for="statusFilter">Review status</label>
-          <select id="statusFilter">
+          <select id="statusFilter" data-tip="Filter by the review decisions you recorded">
             <option value="">All statuses</option>
             <option value="open">Open</option>
             <option value="resolved">Resolved</option>
@@ -287,8 +295,7 @@
           </select>
           <span class="grow"></span>
           <span class="count-line" id="issueCount" aria-live="polite"></span>
-          <button type="button" class="btn small" id="exportLog">Export review log (CSV)</button>
-          <button type="button" class="btn small" id="exportHandoff">Export review handoff</button>
+          <button type="button" class="btn small" id="clearFilters" hidden>Clear filters</button>
         </div>
         <div class="tbl-wrap" tabindex="0" role="region" aria-label="Issue table">
           <table class="tbl" id="issueTable" role="table">
@@ -303,10 +310,19 @@
         <div id="slideList"></div>
       </div>
 
-      <div role="tabpanel" id="pane-coverage" aria-labelledby="tab-coverage" hidden>
+      <div role="tabpanel" id="pane-coverage" aria-labelledby="tab-coverage">
+        <p class="note findings-help">Tick a figure after reviewing it. The Status column shows how the deck value compares with Excel.</p>
         <div class="toolbar">
           <div class="chips" id="statusChips" role="group" aria-label="Status"></div>
           <span class="grow"></span>
+          <label class="visually-hidden" for="covCheckFilter">Check status</label>
+          <select id="covCheckFilter">
+            <option value="">All checks</option>
+            <option value="pending">To check</option>
+            <option value="checked">Checked</option>
+          </select>
+          <label class="visually-hidden" for="covSlideFilter">Slide</label>
+          <select id="covSlideFilter"><option value="">All slides</option></select>
           <label class="visually-hidden" for="covSearch">Search numbers</label>
           <input class="search" type="search" id="covSearch" placeholder="Search numbers" autocomplete="off">
           <span class="count-line" id="covCount" aria-live="polite"></span>
@@ -315,7 +331,7 @@
           <table class="tbl" id="covTable">
             <caption class="visually-hidden">Every number read from the deck, with its tick and tie status</caption>
             <thead><tr>
-              <th scope="col" class="r">Slide</th><th scope="col" class="r">Deck</th><th scope="col">Evidence</th><th scope="col">Label</th>
+              <th scope="col">Check</th><th scope="col" class="r">Slide</th><th scope="col" class="r">Deck</th><th scope="col">Evidence</th><th scope="col">Label</th>
               <th scope="col">Status</th><th scope="col">Source cell</th><th scope="col" class="r">Model</th>
               <th scope="col">Method</th><th scope="col" class="r">Conf.</th>
             </tr></thead>
@@ -323,6 +339,31 @@
           </table>
         </div>
         <div class="more"><button type="button" class="btn small" id="covMore" hidden>Show more</button><span class="count-line" id="covNote"></span></div>
+      </div>
+
+      <div role="tabpanel" id="pane-ai" aria-labelledby="tab-ai" hidden>
+        <div class="toolbar">
+          <label class="visually-hidden" for="aiFilter">AI decision</label>
+          <select id="aiFilter">
+            <option value="">All AI decisions</option>
+            <option value="suggested">AI suggestions</option>
+            <option value="used">AI-assisted matches</option>
+            <option value="confirmed">Confirmed by reviewer</option>
+          </select>
+          <label class="visually-hidden" for="aiSearch">Search AI activity</label>
+          <input class="search" type="search" id="aiSearch" placeholder="Search AI activity" autocomplete="off">
+          <span class="count-line" id="aiCount" aria-live="polite"></span>
+        </div>
+        <div class="tbl-wrap" tabindex="0" role="region" aria-label="AI source decisions">
+          <table class="tbl">
+            <thead><tr>
+              <th scope="col" class="r">Slide</th><th scope="col">Metric</th><th scope="col" class="r">Deck</th>
+              <th scope="col">AI source</th><th scope="col" class="r">Model</th><th scope="col">AI decision</th>
+              <th scope="col">Current result</th><th scope="col">Evidence</th>
+            </tr></thead>
+            <tbody id="aiBody"></tbody>
+          </table>
+        </div>
       </div>
 
       <div role="tabpanel" id="pane-warnings" aria-labelledby="tab-warnings" hidden>
@@ -340,13 +381,13 @@
       <div id="drawerSev"></div>
       <h3 id="drawerTitle"></h3>
     </div>
-    <button type="button" class="icon-btn" id="drawerPrev" aria-label="Previous issue" title="Previous (k)">
+    <button type="button" class="icon-btn" id="drawerPrev" data-tip="Open the previous finding (K)" aria-label="Previous issue">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
     </button>
-    <button type="button" class="icon-btn" id="drawerNext" aria-label="Next issue" title="Next (j)">
+    <button type="button" class="icon-btn" id="drawerNext" data-tip="Open the next finding (J)" aria-label="Next issue">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </button>
-    <button type="button" class="icon-btn" id="drawerClose" aria-label="Close" title="Close (Esc)">
+    <button type="button" class="icon-btn" id="drawerClose" aria-label="Close" data-tip="Close the finding (Esc)">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
@@ -359,8 +400,12 @@
     <div>
       <h2 id="evidenceTitle">Source preview</h2>
       <p id="evidenceSubtitle" class="muted"></p>
+      <div id="evidenceStatus" role="status" aria-live="polite"></div>
     </div>
-    <form method="dialog"><button class="btn small" type="submit" autofocus>Close preview</button></form>
+    <div class="evidence-head-actions">
+      <div id="evidenceCheck"></div>
+      <form method="dialog"><button class="btn small" type="submit" autofocus>Close preview</button></form>
+    </div>
   </header>
   <div class="evidence-panes">
     <section aria-labelledby="slidePaneTitle">
@@ -371,8 +416,8 @@
       <h3 id="workbookPaneTitle">Excel</h3>
       <div class="source-tools" id="sourceTools" hidden>
         <div class="evidence-actions">
-          <button type="button" class="btn small inspect-btn" id="findSources">Find possible sources</button>
-          <button type="button" class="btn small" id="askSourceAI" hidden>Identify and record source with AI</button>
+          <button type="button" class="btn small inspect-btn" id="findSources" data-tip="Search your Excel files for cells that could explain this figure">Find possible sources</button>
+          <button type="button" class="btn small" id="askSourceAI" data-tip="Ask your AI provider to compare masked candidate labels and record its suggestion" hidden>Identify and record source with AI</button>
         </div>
         <p class="note" id="sourceDiscoveryStatus" role="status"></p>
       </div>
@@ -394,18 +439,24 @@
 
 <div class="modal" id="helpModal" role="dialog" aria-modal="true" aria-labelledby="helpTitle" hidden>
   <div class="modal-head">
-    <h2 class="section-title" id="helpTitle">Keyboard shortcuts</h2>
+    <h2 class="section-title" id="helpTitle">How to review a deck</h2>
     <button type="button" class="icon-btn" id="helpClose" aria-label="Close">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
+  <ol class="help-steps">
+    <li>Add the deck and its current Excel files, then select <strong>Start review</strong>.</li>
+    <li>Open a finding to read why it was flagged. Select <strong>Inspect</strong> to compare the slide and the workbook cell. A possible source still needs your review.</li>
+    <li>Record your decision and notes on the finding. Open <strong>Download reports and review notes</strong> to export the results.</li>
+  </ol>
+  <h3>Keyboard shortcuts</h3>
   <dl class="shortcuts">
     <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next and previous issue</dd>
     <dt><kbd>Enter</kbd></dt><dd>Open the selected issue</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close the panel</dd>
     <dt><kbd>/</kbd></dt><dd>Search issues</dd>
     <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Toggle high, medium, low</dd>
-    <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+    <dt><kbd>?</kbd></dt><dd>Open the review guide</dd>
   </dl>
 </div>
 

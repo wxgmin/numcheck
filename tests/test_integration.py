@@ -3,11 +3,42 @@
 import tempfile
 from pathlib import Path
 
-from numcheck.config import load_config
+from openpyxl import Workbook
+from pptx import Presentation
+from pptx.util import Inches
+
+from numcheck.config import Config, load_config
 from numcheck.demo import build_demo
 from numcheck.demo.build_deck import build_deck
 from numcheck.demo.build_model import build_model
 from numcheck.runner import run_review
+
+
+def test_growth_phrasing_through_real_presentation_and_workbook(tmp_path):
+    model = tmp_path / "operations.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["Metric", "FY22A", "FY23A", "FY24A"])
+    workbook.active.append(["Subscribers", 1000, 1100, 1210])
+    workbook.active.append(["Revenue", 200, 225, 250])
+    workbook.save(model)
+
+    deck = tmp_path / "review.pptx"
+    presentation = Presentation()
+    for claim in (
+        "Subscribers compounded at 10% annually between FY22 and FY24",
+        "Sales increased 25% from FY22 through FY24",
+        "Sales annualized growth was 11.8% from FY22 through FY24",
+    ):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(7), Inches(1)).text = claim
+    presentation.save(deck)
+
+    result = run_review(str(deck), [str(model)], out_dir=str(tmp_path / "report"), annotate=False, config=Config())
+    derived = {match.deck.slide_number: match for match in result.matches if match.method == "derived"}
+    assert {number: match.status for number, match in derived.items()} == {1: "matched", 2: "matched", 3: "matched"}
+    assert "CAGR" in derived[1].note and "CAGR" in derived[3].note
+    assert "cumulative growth" in derived[2].note
+    assert [cell.cell_address for cell in derived[1].derivation_inputs] == ["D2", "B2"]
 
 
 def _has(issues, slide, issue_type, value_fragment=None):

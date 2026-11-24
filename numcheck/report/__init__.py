@@ -127,6 +127,15 @@ def warning_to_dict(w: ReviewWarning) -> dict[str, Any]:
 
 def match_to_row(m: Match) -> dict[str, Any]:
     d = m.deck
+    candidate = None
+    if m.status in {"unmatched", "ambiguous", "matched_value_only"} and m.source_options:
+        candidate = next((value for value, _ in m.source_options if value.ref == m.source_suggestion),
+                         m.source_options[0][0])
+    value = format_model_value(candidate or m.model)
+    if m.method == "derived" and m.comparison is not None:
+        from numcheck.matching.normalizer import format_canonical
+
+        value = format_canonical(m.comparison.dimension, m.comparison.model_value)
     return {
         "slide_number": d.slide_number,
         "raw_text": d.raw_text,
@@ -134,17 +143,17 @@ def match_to_row(m: Match) -> dict[str, Any]:
         "context": d.context,
         "status": m.status,
         "source_cell": m.model.ref if m.model is not None else "",
-        "model_value": format_model_value(m.model),
-        "method": m.method,
+        "model_value": value,
+        "method": "AI suggestion" if candidate and m.source_suggestion else m.method,
         "confidence": clean(round(m.confidence, 3)),
         "deck_uid": d.uid,
         "shape_id": d.shape_id,
         "period": d.period,
         "note": m.note,
+        "derivation_cells": [cell.ref for cell in m.derivation_inputs],
         "possible_source_count": len(m.source_options or ()),
         "source_suggestion": m.source_suggestion,
-        "best_source": (m.source_suggestion or m.source_options[0][0].ref)
-        if m.status in {"unmatched", "ambiguous", "matched_value_only"} and m.source_options else "",
+        "best_source": candidate.ref if candidate else "",
     }
 
 

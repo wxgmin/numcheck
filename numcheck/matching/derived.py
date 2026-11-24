@@ -1,4 +1,4 @@
-"""Verify derived percentages against the model when no cell stores them.
+"""Verify derived growth rates and ratios against their workbook inputs.
 
 Decks routinely show "Revenue grew 11%", "EBITDA margin of 22%" or "FY22-24 CAGR
 of 10%" while the model only stores the underlying revenue and EBITDA lines. Such
@@ -21,15 +21,16 @@ import math
 import re
 
 from numcheck.matching.label_matcher import split_label
-from numcheck.matching.normalizer import Comparison, canonical_model, deck_interval
+from numcheck.matching.normalizer import Comparison, canonical_model, deck_interval, dimensions_compatible
 from numcheck.models import DeckNumber, Match, ModelValue, SlideInfo
-from numcheck.periods import parse_span, period_affinity, previous_period
+from numcheck.periods import Period, find_periods, parse_key, parse_span, period_affinity, previous_period
 
 log = logging.getLogger(__name__)
 
 _GROWTH = {"growth", "cagr"}
-_NOISE = _GROWTH | {"rate", "annual", "annualized", "compound", "yoy", "year", "y", "over", "grew", "increase",
-                    "increased", "up", "rise", "rose"}
+_NOISE = _GROWTH | {"rate", "annual", "annualized", "annually", "annum", "compound", "compounded",
+                    "yoy", "year", "yearly", "y", "over", "grew", "increase", "increased", "up", "rise", "rose",
+                    "from", "between", "through"}
 
 
 _CHANGE_WORDS = {"change", "chg", "delta", "qoq", "yoy", "growth", "expansion", "contraction", "increase", "decrease",
@@ -48,12 +49,12 @@ class _Lookup:
         for mv in values:
             if mv.is_error or mv.unit not in _LEVEL_UNITS + ("percent", "bps", "multiple"):
                 continue
-            label = mv.named_range or mv.row_label
-            if not label:
-                continue
-            toks = frozenset(split_label(label, config).metric) - _UNIT_WORDS
-            if toks:
-                self.by_tokens.setdefault(toks, []).append(mv)
+            keys = set()
+            for label in filter(None, (mv.named_range, mv.row_label)):
+                parts = split_label(label, config)
+                keys.add((parts.tokens | parts.qualifiers) - _UNIT_WORDS)
+            for key in keys - {frozenset()}:
+                self.by_tokens.setdefault(key, []).append(mv)
 
     def periods_of(self, tokens: frozenset[str], units: tuple[str, ...]) -> list[str]:
         from numcheck.periods import sort_key
@@ -75,7 +76,10 @@ class _Lookup:
             return None
         best_aff = max(c[0] for c in cands)
         top = [c[3] for c in cands if c[0] == best_aff]
-        vals = {round(canonical_model(mv, self.config.unit_scales)[1], 6) for mv in top}
+        def fingerprints(cells):
+            return {(canonical_model(mv, self.config.unit_scales), mv.currency) for mv in cells}
+
+        vals = fingerprints(top)
         if len(vals) != 1 and self.context:
             # "US specialty segment" slide: the cells on the "US Specialty" sheet are the ones meant.
             ctx = self.context.lower()
@@ -83,7 +87,7 @@ class _Lookup:
                 r"\b" + re.escape(mv.sheet_name.lower()) + r"\b", ctx)]
             if named:
                 top = named
-                vals = {round(canonical_model(mv, self.config.unit_scales)[1], 6) for mv in top}
+                vals = fingerprints(top)
         if len(vals) != 1:
             return None  # same label, same period, different values: ambiguous
         top.sort(key=lambda mv: (-mv.sheet_priority, mv.hidden))
@@ -98,12 +102,13 @@ def verify_derived(matches: list[Match], model_values: list[ModelValue], config,
         return "change" in {q.lower() for q in m.deck.qualifiers} and m.deck.unit in ("bps", "percent")
 
     def growthy(m: Match) -> bool:
-        return m.deck.unit in ("percent", "none") and "%" in m.deck.raw_text and _growth_intent(m.deck) != 0
+        d = m.deck
+        return d.unit == "percent" and (_growth_intent(d) != 0 or bool(_CAGR_WORDS.search(d.label)))
 
     # Unmatched percentages, plus ambiguous ones that are clearly changes/growth rates: the exact
     # recomputation from the model beats a tie between similarly labelled growth cells.
-    targets = [m for m in matches if (m.status == "unmatched" and (
-        is_delta(m) or (m.deck.unit in ("percent", "none") and "%" in m.deck.raw_text)))
+    targets = [m for m in matches if (m.status in ("unmatched", "matched_value_only") and (
+        is_delta(m) or m.deck.unit in ("percent", "multiple")))
         or (m.status == "ambiguous" and (is_delta(m) or growthy(m)))]
     # Ranges, approximations and targets/guidance are forward-looking statements: never recompute them.
     targets = [m for m in targets if not m.deck.is_range and m.deck.comparator == "="
@@ -112,11 +117,16 @@ def verify_derived(matches: list[Match], model_values: list[ModelValue], config,
         return 0
     lookup = _Lookup(model_values, config)
     hints = {s.slide_number: s.period_hint for s in slides or [] if s.period_hint}
+    verified_levels: dict[tuple[int, int], list[Match]] = {}
+    for m in matches:
+        if m.status == "matched" and m.model and m.deck.unit in _LEVEL_UNITS:
+            verified_levels.setdefault((m.deck.slide_number, m.deck.shape_id), []).append(m)
     changed = 0
     for m in targets:
         lookup.context = m.deck.slide_context or m.deck.slide_title or ""
         try:
-            ok = _verify_delta(m, lookup, config, hints) if is_delta(m) else _verify_one(m, lookup, config, hints)
+            nearby = verified_levels.get((m.deck.slide_number, m.deck.shape_id), [])
+            ok = _verify_delta(m, lookup, config, hints) if is_delta(m) else _verify_one(m, lookup, config, hints, nearby)
             if ok:
                 changed += 1
         except (ValueError, ZeroDivisionError, OverflowError):
@@ -125,9 +135,16 @@ def verify_derived(matches: list[Match], model_values: list[ModelValue], config,
 
 
 _UP = re.compile(r"\b(grew|grow(?:th|s|ing)?|increas(?:e|ed|es|ing)|rose|rising|up|gain(?:ed)?|expand(?:ed|ing)? by|"
-                 r"improv(?:e|ed|ing) by|cagr|y/?y|yoy)\b[^.;:]{0,12}$", re.I)
+                 r"improv(?:e|ed|ing) by|compound(?:ed)?|climb(?:ed|ing)?|cagr|y/?y|yoy)\b[^.;:]{0,12}$", re.I)
 _DOWN = re.compile(r"\b(declin(?:e|ed|es|ing)|decreas(?:e|ed|es|ing)|fell|falling|down|dropp?(?:ed)?|"
-                   r"contract(?:ed|ing)? by|shrank)\b[^.;:]{0,12}$", re.I)
+                   r"contract(?:ed|ing)? by|shrank|deteriorat(?:ed|ing)?|erod(?:ed|ing)?|slipp(?:ed|ing)?)\b[^.;:]{0,12}$", re.I)
+
+_CAGR_WORDS = re.compile(r"\b(?:cagr|compounded|compound\s+annual|annuali[sz]ed|"
+                         r"per\s+(?:annum|year)|annually|each\s+year)\b", re.I)
+_ANNUAL_GROWTH = re.compile(r"\bannual\s+(?:growth|decline|rate\s+of\s+(?:growth|decline))\b", re.I)
+_AVERAGE_ANNUAL = re.compile(r"\baverage\s+annual\b", re.I)
+_N_YEAR = re.compile(r"\b([1-9]\d?)\s*[-– ]?\s*years?\b", re.I)
+_SENTENCE = re.compile(r"(?:[^;!?\n.]|(?<=\d)\.(?=\d))+")
 
 
 def _growth_intent(d: DeckNumber) -> int:
@@ -144,62 +161,140 @@ def _growth_intent(d: DeckNumber) -> int:
     return 0
 
 
-def _verify_one(m: Match, lookup: _Lookup, config, hints: dict[int, str]) -> bool:
+def _compatible_inputs(a: ModelValue, b: ModelValue, config) -> bool:
+    adim = canonical_model(a, config.unit_scales)[0]
+    bdim = canonical_model(b, config.unit_scales)[0]
+    return (dimensions_compatible(adim, bdim)
+            and not (a.currency and b.currency and a.currency != b.currency)
+            and (a.scale == b.scale or (a.scale_known and b.scale_known)))
+
+
+def _same_series(a: ModelValue, b: ModelValue) -> bool:
+    if (a.workbook, a.sheet_name) != (b.workbook, b.sheet_name):
+        return False
+    return (a.row == b.row if a.row and b.row else a.row_label == b.row_label)
+
+
+def _apply_growth(m, start, end, config, *, years=1, name="growth", decline=False, confirm_only=False) -> bool:
+    if not start or not end:
+        return False
+    a, first = start
+    b, last = end
+    if not _same_series(a, b) or not _compatible_inputs(a, b, config) or first <= 0 or last < 0:
+        return False
+    pa, pb = parse_key(a.period), parse_key(b.period)
+    if pa and pb and pa.basis != pb.basis and "y" not in (pa.basis, pb.basis):
+        return False
+    expected = ((last / first) ** (1 / years) - 1) * 100
+    if decline and m.deck.value >= 0:
+        expected = -expected
+    return _apply(m, expected, b, f"{name} of {b.ref} over {a.ref}", config,
+                  other=a, confirm_only=confirm_only)
+
+
+def _projected_cagr(m: Match, base: frozenset[str], nearby: list[Match], config) -> bool:
+    """Use a verified actual and forecast stated together in the same text shape."""
     d = m.deck
-    text = f"{d.label} {d.context}" if d.label else d.context
+    if d.char_start is None:
+        return False
+    forecasts = []
+    actuals = []
+    for level in nearby:
+        cell = level.model
+        label = split_label(level.deck.label, config)
+        if cell is None or (label.tokens | label.qualifiers) != base:
+            continue
+        periods = [p for p, _, _ in find_periods(level.deck.context)
+                   if p.is_full_year and p.key == level.deck.period]
+        for p in set(periods):
+            if p.status in ("e", "p", "f") and level.deck.context == d.context:
+                if level.deck.char_start is not None and 0 <= level.deck.char_start < d.char_start:
+                    forecasts.append((p, cell))
+            elif p.status == "a" and level.deck.context != d.context:
+                actuals.append((p, cell))
+
+    if len(forecasts) != 1:
+        return False
+    end_period, end = forecasts[0]
+    starts = {(p.key, cell.ref): (p, cell) for p, cell in actuals
+              if p.year < end_period.year and _same_series(cell, end)}
+    if len(starts) != 1:
+        return False
+    start_period, start = next(iter(starts.values()))
+    years = end_period.year - start_period.year
+    return _apply_growth(m, (start, canonical_model(start, config.unit_scales)[1]),
+                         (end, canonical_model(end, config.unit_scales)[1]), config,
+                         years=years, name=f"{years}-year CAGR (actual to forecast)", confirm_only=True)
+
+
+def _verify_one(m: Match, lookup: _Lookup, config, hints: dict[int, str], nearby: list[Match]) -> bool:
+    d = m.deck
+    # Sentence punctuation bounds the claim while preserving decimal values and fiscal-year ranges.
+    clause = next((piece.group() for piece in _SENTENCE.finditer(d.context)
+                   if piece.start() <= d.char_start < piece.end()), "") if d.char_start is not None else ""
+    text = " ".join(filter(None, (d.label, d.row_label, d.col_label, clause or d.context)))
     parts = split_label(d.label or d.context, config)
-    toks = set(parts.metric)
+    toks = set(parts.tokens | parts.qualifiers)
     period = d.period or hints.get(d.slide_number, "") or config.base_period
     intent = _growth_intent(d)
-    if intent and not toks & _GROWTH:
+    cagr_signal = bool(_CAGR_WORDS.search(text) or _ANNUAL_GROWTH.search(text))
+    if (intent or cagr_signal) and not toks & _GROWTH:
         toks |= {"growth"}
-    already_signed = "decline" in {q.lower() for q in d.qualifiers} or d.value < 0
-    sign = -1.0 if (intent < 0 and not already_signed) else 1.0
-    if toks & _GROWTH:
+    if d.unit != "multiple" and toks & _GROWTH:
+        if _AVERAGE_ANNUAL.search(text) and not re.search(r"\b(?:cagr|compound(?:ed)?)\b", text, re.I):
+            return False  # Arithmetic mean of annual changes and CAGR are different measures.
         base = frozenset(t for t in toks if t not in _NOISE) - _UNIT_WORDS
-        if not base or base not in lookup.by_tokens:
+        if not base or (base not in lookup.by_tokens and not parts.qualifiers and not parts.entity):
             base = _metric_from_clause(d, lookup) or base
         if not base:
             return False
-        if "cagr" in toks:
-            span = parse_span(text)
-            if not span:
-                return False
+        span = parse_span(text)
+        if span:
             start_key, end_key, years = span
-            a, b = lookup.value(base, start_key), lookup.value(base, end_key)
-            if not a or not b or a[1] <= 0 or b[1] <= 0:
-                return False
-            expected = ((b[1] / a[1]) ** (1.0 / years) - 1.0) * 100.0
-            return _apply(m, expected, b[0], f"{years}-year CAGR of {b[0].ref} over {a[0].ref}", config)
+            start, end = lookup.value(base, start_key), lookup.value(base, end_key)
+            return _apply_growth(m, start, end, config, years=years if cagr_signal else 1,
+                                 name=f"{years}-year CAGR" if cagr_signal else "cumulative growth",
+                                 decline=intent < 0)
+        if cagr_signal:
+            duration = _N_YEAR.search(text)
+            end_periods = {p.key: p for p, _, _ in find_periods(text) if p.is_full_year}
+            if duration and len(end_periods) == 1:
+                end_period = next(iter(end_periods.values()))
+                years = int(duration.group(1))
+                start_key = Period(end_period.basis, end_period.year - years).key
+                start, end = lookup.value(base, start_key), lookup.value(base, end_period.key)
+                return _apply_growth(m, start, end, config, years=years, name=f"{years}-year CAGR",
+                                     decline=intent < 0)
+            return _projected_cagr(m, base, nearby, config)
         if not period:
             return False
+        if len({p.key for p, _, _ in find_periods(clause or text) if p.year is not None}) > 1:
+            return False  # Multiple stated dates require a recognised range.
         cur, prev = lookup.value(base, period), lookup.value(base, previous_period(period))
-        if not cur or not prev or prev[1] == 0:
-            return False
-        expected = sign * (cur[1] / prev[1] - 1.0) * 100.0
-        return _apply(m, expected, cur[0], f"growth of {cur[0].ref} over {prev[0].ref}", config)
+        return _apply_growth(m, prev, cur, config, decline=intent < 0)
 
-    if _verify_share(m, lookup, config, period):
+    if d.unit != "multiple" and _verify_share(m, lookup, config, period):
         return True
 
     from numcheck.checks.arithmetic import RELATIONS
 
     for rel in RELATIONS:
-        if rel.kind != "pct":
+        if (rel.kind == "multiple") != (d.unit == "multiple"):
             continue
-        if not any(set(s) <= toks for s in rel.results) or not period:
+        # Require the complete label so a segment or adjusted result cannot pick up group inputs.
+        if frozenset(toks) not in rel.results or not period:
             continue
         num = _first(lookup, rel.numerator, period)
         den = _first(lookup, rel.denominator, period)
-        if not num or not den or den[1] == 0:
+        if (not num or not den or den[1] <= 0 or num[0].workbook != den[0].workbook
+                or not _compatible_inputs(num[0], den[0], config)):
             continue
-        if num[0].scale != den[0].scale and not (num[0].scale_known and den[0].scale_known):
-            continue   # $000 operating income over a revenue cell of unknown scale: not comparable
-        expected = num[1] / den[1] * 100.0
-        if abs(expected) > 1000.0:
-            continue   # an implausible margin means the operands are not what we think
-
-        return _apply(m, expected, num[0], f"{rel.name} = {num[0].ref} / {den[0].ref}", config)
+        ratio = num[1] / den[1]
+        expected = ratio if rel.kind == "multiple" else (ratio - (rel.kind == "premium")) * 100.0
+        formula = f"{rel.name} = {num[0].ref} / {den[0].ref}"
+        if rel.kind == "premium":
+            formula += " − 1"
+        return _apply(m, expected, num[0], formula, config, other=den[0])
     return False
 
 
@@ -228,11 +323,11 @@ def _verify_share(m: Match, lookup: _Lookup, config, period: str) -> bool:
     for per in ([period] if period else []) + [""]:
         num = lookup.value(num_key, per) if per else _any_value(lookup, num_key)
         den = lookup.value(base, per) if per else _any_value(lookup, base)
-        if num and den and den[1] and num[0].unit == den[0].unit:
+        if num and den and den[1] and _compatible_inputs(num[0], den[0], config):
             expected = num[1] / den[1] * 100.0
             _dim, lo, hi = deck_interval(d, config)
             if lo - 1e-9 <= expected <= hi + 1e-9:
-                return _apply(m, expected, num[0], f"share = {num[0].ref} / {den[0].ref}", config)
+                return _apply(m, expected, num[0], f"share = {num[0].ref} / {den[0].ref}", config, other=den[0])
     return False
 
 
@@ -276,13 +371,13 @@ _YOY_RE = re.compile(r"\b(y\s?o\s?y|y/y|year[- ](?:on|over)[- ]year|vs\.?\s+prio
 
 def _verify_delta(m: Match, lookup: _Lookup, config, hints: dict[int, str]) -> bool:
     """bps / percentage-point changes: level(period) - level(prior period) of the same metric."""
-    from numcheck.periods import parse_key, previous_quarter
+    from numcheck.periods import previous_quarter
 
     d = m.deck
     text = " ".join(x for x in (d.label, d.row_label, d.col_label, d.context) if x)
-    base = frozenset(t for t in split_label(d.row_label or d.label or d.context, config).metric
-                     if t not in _CHANGE_WORDS) - _UNIT_WORDS
-    if not base or base not in lookup.by_tokens:
+    parts = split_label(d.row_label or d.label or d.context, config)
+    base = (parts.tokens | parts.qualifiers) - _CHANGE_WORDS - _UNIT_WORDS
+    if not base or (base not in lookup.by_tokens and not parts.qualifiers and not parts.entity):
         base = _metric_from_clause(d, lookup) or base
     if not base:
         return False
@@ -291,7 +386,7 @@ def _verify_delta(m: Match, lookup: _Lookup, config, hints: dict[int, str]) -> b
     known = lookup.periods_of(base, units)
     if not known:
         return False
-    if not period or not any(period_affinity(period, k) for k in known):
+    if not period:
         period = known[-1]   # no stated period: the latest period the model has for this metric
     p = parse_key(period)
     qoq = bool(_QOQ_RE.search(text)) or (p is not None and p.part.startswith("q") and not _YOY_RE.search(text))
@@ -299,38 +394,47 @@ def _verify_delta(m: Match, lookup: _Lookup, config, hints: dict[int, str]) -> b
     if not prior:
         return False
     cur, prev = lookup.value(base, period, units), lookup.value(base, prior, units)
-    if not cur or not prev:
+    if not cur or not prev or not _same_series(cur[0], prev[0]):
         return False
+    if d.unit == "percent":
+        # A segment's "up 12%" can be its growth rate. It does not say its growth
+        # rate rose by 12 percentage points.
+        labels = (split_label(cell.row_label, config).tokens for cell in (cur[0], prev[0]))
+        if any(tokens & _GROWTH for tokens in labels):
+            return False
     expected = cur[1] - prev[1]          # percentage points (canonical percent)
     return _apply(m, expected, cur[0],
-                  f"change in {cur[0].ref} vs {prev[0].ref} ({'QoQ' if qoq else 'YoY'})", config)
+                  f"change in {cur[0].ref} vs {prev[0].ref} ({'QoQ' if qoq else 'YoY'})", config, other=prev[0])
 
 
 def _first(lookup: _Lookup, token_sets, period: str):
-    for s in token_sets:
-        hit = lookup.value(frozenset(s), period)
-        if hit:
-            return hit
-    return None
+    hits = [hit for key in token_sets if (hit := lookup.value(key, period))]
+    if len({(hit[0].unit, hit[0].currency, hit[1]) for hit in hits}) != 1:
+        return None
+    return hits[0]
 
 
-def _apply(m: Match, expected: float, source: ModelValue, how: str, config) -> bool:
+def _apply(m: Match, expected: float, source: ModelValue, how: str, config, *,
+           other: ModelValue, confirm_only: bool = False) -> bool:
     if not math.isfinite(expected):
         return False
     from numcheck.matching.normalizer import canonical_deck, parsed_from_deck
 
-    _dim, lo, hi = deck_interval(m.deck, config)
+    dim, lo, hi = deck_interval(m.deck, config)
     deck_val = canonical_deck(parsed_from_deck(m.deck), config.unit_scales)[1]   # bps -> percent points
     if "valence" in (m.deck.qualifiers or []) and expected * deck_val < 0:
         expected = -expected   # "improved by 120bps" of a combined ratio is a fall: compare the magnitude
     tol = max((hi - lo) / 2.0, 1e-9)
     ok = lo - 1e-9 <= expected <= hi + 1e-9
+    if confirm_only and not ok:
+        return False
     m.comparison = Comparison(
-        ok=ok, dimension="percent", deck_value=deck_val, model_value=expected, tolerance=tol,
+        ok=ok, dimension=dim, deck_value=deck_val, model_value=expected, tolerance=tol,
         difference=deck_val - expected, interpretation=f"derived: {how}",
         rounding_rel=abs(deck_val - expected) / max(abs(expected), 1e-12),
     )
     m.model = source
+    m.derivation_inputs = (source, other)
     m.method = "derived"
     m.status = "matched" if ok else "mismatch"
     m.confidence = 0.8 if ok else 0.75

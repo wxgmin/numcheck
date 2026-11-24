@@ -41,7 +41,7 @@ def _model_label(mv) -> str:
 
 def _expected_text(m: Match, config) -> str:
     c = m.comparison
-    if c is not None and m.model is not None and not m.model.is_error:
+    if m.method != "confirmed" and c is not None and m.model is not None and not m.model.is_error:
         return format_like(m.deck, c.model_value, config)
     return format_model_value(m.model)
 

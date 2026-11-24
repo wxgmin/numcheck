@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -35,11 +35,24 @@ from numcheck.llm.chatgpt import ChatGPTConnection
 from numcheck.llm.chatgpt import ConnectionError as ChatGPTConnectionError
 from numcheck.llm.factory import PROVIDERS, default_model, resolve_ambiguous
 from numcheck.matching.index import ModelIndex
+from numcheck.matching.normalizer import compare
 from numcheck.matching.source_search import (
-    UNRESOLVED, discover_sources, display_precision, source_comparison, suggest_sources,
+    UNRESOLVED,
+    discover_sources,
+    display_precision,
+    source_comparison,
+    suggest_sources,
 )
-from numcheck.models import ModelValue, NumCheckInputError, ReviewResult, ReviewWarning, format_model_value
-from numcheck.report import MATCH_ROW_CAP, result_to_dict
+from numcheck.models import (
+    Issue,
+    Match,
+    ModelValue,
+    NumCheckInputError,
+    ReviewResult,
+    ReviewWarning,
+    format_model_value,
+)
+from numcheck.report import match_to_row, result_to_dict
 from numcheck.web.evidence import PreviewUnavailable, slide_preview, workbook_preview
 
 log = logging.getLogger(__name__)
@@ -103,10 +116,11 @@ class Job:
     source_index: ModelIndex | None = field(default=None, repr=False)
     source_options: dict[str, tuple[list[tuple[ModelValue, str]], list[tuple[ModelValue, str]]]] = field(
         default_factory=dict, repr=False)
-    ai_sources: dict[str, str] = field(default_factory=dict, repr=False)
+    source_confirmations: dict[str, tuple[Match, list[Issue]]] = field(default_factory=dict, repr=False)
     source_lock: Any = field(default_factory=threading.Lock, repr=False)
     source_review: dict[str, Any] = field(default_factory=dict)
     next_issue_id: int = 1
+    result_revision: int = 0
     slide_previews: dict[tuple, dict] = field(default_factory=dict, repr=False)
     preview_lock: Any = field(default_factory=threading.Lock, repr=False)
 
@@ -202,7 +216,8 @@ class JobManager:
             payload = build_payload(job, result)
             self.update(job, result=result, payload=payload, status="done", stage="done", progress=1.0,
                         message="Review complete", finished=time.time(),
-                        next_issue_id=max((issue.id for issue in result.issues), default=0) + 1)
+                        next_issue_id=max((issue.id for issue in result.issues), default=0) + 1,
+                        result_revision=payload["revision"])
         except NumCheckInputError as exc:
             self.update(job, status="error", finished=time.time(), message=str(exc),
                         error={"message": str(exc), "hint": exc.hint, "file": exc.file})
@@ -247,8 +262,10 @@ class JobManager:
             )
             state = {"status": "done", "summary": result.source_review,
                      "warning": warnings[0].message if warnings else ""}
-            self.update(job, result=result, payload=build_payload(job, result),
-                        source_review=state, next_issue_id=next_id, last_access=time.time())
+            with self.lock:
+                payload = build_payload(job, result)
+                self.update(job, result=result, payload=payload, result_revision=payload["revision"],
+                            source_review=state, next_issue_id=next_id, last_access=time.time())
         except Exception:
             if report_dir is not None:
                 shutil.rmtree(report_dir, ignore_errors=True)
@@ -290,8 +307,23 @@ def _download_path(job: Job, name: str) -> Path | None:
 
 
 def build_payload(job: Job, result: ReviewResult) -> dict[str, Any]:
-    data = result_to_dict(result, match_cap=MATCH_ROW_CAP)
+    data = result_to_dict(result)
     data["job_id"] = job.id
+    data["revision"] = job.result_revision + 1
+    names = {Path(path).name: name
+             for path, name in zip(job.paths.get("models", []), job.names.get("models", []))}
+    data["ai_activity"] = [
+        {"deck_uid": match.deck.uid, "slide_number": match.deck.slide_number,
+         "label": match.deck.label, "raw_text": match.deck.raw_text, "outcome": outcome,
+         "source_cell": value.ref, "file": names.get(value.workbook, value.workbook),
+         "address": f"{value.sheet_name}!{value.cell_address}",
+         "model_value": format_model_value(value),
+         "reviewer_confirmed": match.method == "confirmed" and match.model.ref == value.ref,
+         "current_source": match.model is not None and match.model.ref == value.ref,
+         "status": match.status}
+        for match in result.matches for value, outcome in match.ai_sources
+    ]
+    data["confirmed_sources"] = [match_to_row(m) for m in result.matches if m.method == "confirmed"]
     data["inputs"] = {**data.get("inputs", {}), **{k: v for k, v in job.names.items() if v}}
     data["settings"] = {**job.settings, **data.get("settings", {})}
     data["downloads"] = [
@@ -697,7 +729,9 @@ def create_app(config_path: str | None = None) -> Flask:
         issue_id = request.args.get("issue", type=int)
         figure = request.args.get("figure")
         issue = next((i for i in job.result.issues if i.id == issue_id), None) if issue_id is not None else None
-        uid = issue.deck_uid if issue is not None else figure
+        if figure and issue is not None and issue.deck_uid != figure:
+            issue = None
+        uid = figure or (issue.deck_uid if issue is not None else None)
         match = next((m for m in job.result.matches if uid and m.deck.uid == uid), None)
         if issue is None and match is None:
             raise RequestError("This figure is unavailable.", 404)
@@ -777,6 +811,68 @@ def create_app(config_path: str | None = None) -> Flask:
         mgr.submit_source_review(job, ai_cfg)
         return jsonify({"status": "queued"}), 202
 
+    def publish_source_match(job, original, updated, *, previous_issues=(), recheck=False):
+        from numcheck.runner import revise_source_matches
+
+        if job.source_review.get("status") in ("queued", "running"):
+            raise RequestError("Wait for the source review to finish before changing this source.", 409)
+        matches = [updated if m is original else m for m in job.result.matches]
+        if not any(m is updated for m in matches):
+            raise RequestError("This result changed. Reopen Inspect and try again.", 409)
+        report_dir = tempfile.mkdtemp(prefix="source-report-", dir=job.dir)
+        result, next_id = revise_source_matches(
+            job.result, matches, job.cfg or Config(), job.paths["deck"], report_dir,
+            bool(job.settings.get("annotate", True)), job.next_issue_id,
+            previous_issues, recheck=recheck,
+        )
+        payload = build_payload(job, result)
+        mgr.update(job, result=result, payload=payload, next_issue_id=next_id,
+                   result_revision=payload["revision"])
+
+    def can_confirm_source(match):
+        return (match is not None and (match.status in UNRESOLVED or match.method in ("source_ai", "llm"))
+                and not match.deck.is_range and match.deck.comparator == "=")
+
+    @app.post("/api/jobs/<job_id>/evidence/confirmation")
+    def confirm_evidence_source(job_id: str):
+        job = find_job(job_id)
+        with mgr.lock:
+            _, match = get_evidence(job)
+            if match is None:
+                raise RequestError("This figure has no workbook match to review.", 422)
+            uid = match.deck.uid
+            saved = job.source_confirmations.get(uid)
+            if request.form.get("undo") == "true":
+                if saved is not None:
+                    original, issues = saved
+                    publish_source_match(job, match, original, previous_issues=issues, recheck=True)
+                    del job.source_confirmations[uid]
+                return jsonify(job.payload)
+            if not can_confirm_source(match):
+                raise RequestError("This figure cannot be checked against a single candidate cell.", 422)
+            ref = request.form.get("cell")
+            with job.source_lock:
+                options = match.source_options
+                if options is None:
+                    options, _ = job.source_options.get(uid, ([], []))
+                candidates = [value for value, _ in options] + match.candidates
+                if match.model is not None:
+                    candidates.append(match.model)
+                selected = next((value for value in candidates if value.ref == ref), None)
+            current = {path.name for slot, path, _ in originals(job) if slot.startswith("model-")}
+            if selected is None or selected.workbook not in current or selected.is_error:
+                raise RequestError("Choose a numeric candidate from the current Excel files.", 422)
+            comparison = compare(match.deck, selected, job.cfg or Config())
+            if comparison is None:
+                raise RequestError("The slide and Excel cell cannot be compared in compatible units.", 422)
+            updated = replace(match, model=selected, status="matched" if comparison.ok else "mismatch",
+                              method="confirmed", comparison=comparison, confidence=1.0, old_model=None,
+                              note="Source confirmed by reviewer.")
+            issues = job.result.issues[:]
+            publish_source_match(job, match, updated, recheck=True)
+            job.source_confirmations[uid] = (match, issues)
+            return jsonify(job.payload)
+
     @app.post("/api/jobs/<job_id>/evidence/sources")
     def evidence_sources(job_id: str):
         job = find_job(job_id)
@@ -812,8 +908,10 @@ def create_app(config_path: str | None = None) -> Flask:
                     slot, name = workbook
                     recorded = {"slot": slot, "file": name, "sheet": selected.sheet_name,
                                 "address": selected.cell_address}
-                    with job.source_lock:
-                        job.ai_sources[match.deck.uid] = recommendation
+                    with mgr.lock:
+                        updated = replace(match, source_suggestion=recommendation, source_options=list(candidates))
+                        updated.record_ai_source(selected, "suggested")
+                        publish_source_match(job, match, updated)
             message = (warnings[0].message if warnings else
                        "" if recorded else "AI could not identify a best source from these candidates.")
         return jsonify({"count": len(candidates), "ai_eligible": bool(candidates),
@@ -826,6 +924,8 @@ def create_app(config_path: str | None = None) -> Flask:
         issue, match = get_evidence(job)
         source = ((issue.source_cell if issue is not None else "")
                   or (match.model.ref if match is not None and match.model else ""))
+        if match is not None and match.method in ("confirmed", "source_ai", "llm") and match.model:
+            source = match.model.ref
         options = []
         ai_source = ""
         discovered, cached = [], None
@@ -839,16 +939,22 @@ def create_app(config_path: str | None = None) -> Flask:
             discovered = [value for value, _ in cached or ()]
             if unresolved and cached is not None:
                 options = discovered
-                saved_ref = job.ai_sources.get(match.deck.uid, "")
+                saved_ref = match.source_suggestion
                 ai_source = saved_ref if any(m.ref == saved_ref for m in options) else ""
-                source = ai_source or match.source_suggestion or (options[0].ref if options else "")
+                source = ai_source or (options[0].ref if options else "")
                 options.sort(key=lambda value: value.ref != source)
             else:
                 prior_candidates = [value for value in match.candidates if unresolved or value.ref == source]
-                options = list({m.ref: m for m in [match.model, *prior_candidates, match.old_model]
+                options = list({m.ref: m for m in [match.model, *match.derivation_inputs, *prior_candidates, match.old_model]
                                 if m is not None}.values())
         selection = request.args.get("cell")
         selected = next((m for m in options if m.ref == (selection or source)), None)
+        historical = False
+        if selected is None and selection and match is not None:
+            selected = next((value for value, _ in match.ai_sources if value.ref == selection), None)
+            if selected is not None:
+                options.append(selected)
+                historical = True
         workbooks = {path.name: (slot, path, name) for slot, path, name in originals(job) if slot != "deck"}
         discovered_refs = {value.ref for value in discovered}
         comparisons = {}
@@ -865,6 +971,11 @@ def create_app(config_path: str | None = None) -> Flask:
             return "inferred" if comparison.inferred else "reconciles"
 
         result = {"can_discover": unresolved,
+                  "can_confirm": can_confirm_source(match) and not historical,
+                  "confirmed": match is not None and match.method == "confirmed" and not historical,
+                  "historical_ai_source": historical,
+                  "match_status": match.status if match is not None else "",
+                  "derivation": match.note if match is not None and match.method == "derived" else "",
                   "source_search_done": cached is not None,
                   "ai_eligible": unresolved and bool(discovered),
                   "ai_source": ai_source,
@@ -877,7 +988,7 @@ def create_app(config_path: str | None = None) -> Flask:
              "prior": m is match.old_model, "selected": m is selected,
              "possible": m.ref in discovered_refs,
              "comparison": comparison_status(m) if unresolved else "",
-             "display_value": format_model_value(m) if unresolved else "",
+             "display_value": format_model_value(m),
              "metric": " · ".join(filter(None, (m.row_label, m.col_label)))} for m in options
         ]}
         if selected is None:

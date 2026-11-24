@@ -1387,6 +1387,11 @@ def _extract_text_item(ctx: _SlideCtx, it: _TextItem, items: list[_TextItem]) ->
                     dn.context = f"{caption}: {text.strip() if range_only else dn.raw_text}"
                     if ctx.hint and ctx.hint.per_share_exception and dn.unit_source == ctx.hint.source and PER_SHARE_RE.search(caption):
                         dn.scale, dn.scale_known = "", True
+            # A heading in the same text box can distinguish otherwise identical metrics.
+            if dn.is_range and dn.label and len(lines) == 2 and display_line == lines[1]:
+                heading = _caption_text(lines[0])
+                if heading and heading.casefold() not in dn.label.casefold():
+                    dn.label = _label_text([heading, dn.label])
             projected_label = _PROJECTION_PREFIX.sub("", dn.label)
             if projected_label != dn.label and projected_label and dn.period:
                 dn.label = projected_label

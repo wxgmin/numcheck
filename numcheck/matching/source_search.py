@@ -13,7 +13,7 @@ from numcheck.matching.index import DECK_DECORATION, ModelIndex, covenant_words,
 from numcheck.matching.label_matcher import STRICT_QUALIFIERS, normalize_qualifiers, qualifier_factor, split_label
 from numcheck.matching.llm_matcher import MAX_CANDIDATES, build_entry, mask_digits
 from numcheck.matching.normalizer import Comparison, compare, dimensions_compatible
-from numcheck.models import DeckNumber, Match, ModelValue, ReviewWarning, Source
+from numcheck.models import DeckNumber, ModelValue, ReviewWarning, Source
 from numcheck.periods import find_periods, period_affinity
 
 UNRESOLVED = frozenset({"unmatched", "ambiguous", "matched_value_only"})
@@ -299,36 +299,110 @@ def _verified_source(match, index, ranked, truncated, config, suggested):
                    note="Workbook label, period and displayed value corroborate the source.")
 
 
-def _verify_range_pairs(matches, index, precise):
-    """Verify a labelled range using both displayed values and opposite workbook headers."""
+_RANGE_ROLE_WORDS = {"min": {"minimum", "min"}, "max": {"maximum", "max"}}
+_RANGE_QUALIFIERS = {"low", "high", "min", "max"}
+_RANGE_CONTEXT = {"selected", "reference", "preliminary"}
+_RANGE_HEADER_SCENARIO = re.compile(rf"\b({_SCENARIO_WORDS})\b", re.I)
+_RANGE_ENTITY_SCOPE = re.compile(r"\b(?:segment|region|division|subsidiary|business unit)\b", re.I)
+
+
+def _range_tokens(parts):
+    return parts.tokens - DECK_DECORATION - _RANGE_CONTEXT - {"scenario"}
+
+
+def _range_scenario(period, *texts):
+    scenario = _period_scenario(period, *texts)
+    if scenario:
+        return scenario
+    for text in texts:
+        words = _RANGE_HEADER_SCENARIO.findall(text.lower())
+        if words:
+            scenarios = {"a" if word.startswith(("actual", "historical")) else
+                         "b" if word.startswith("budget") else "forecast" for word in words}
+            return scenarios.pop() if len(scenarios) == 1 else None
+    return ""
+
+
+def _range_cells(deck, index, precise, role, *, time_span):
+    label = _source_label(deck)
+    parts = index.parts(label)
+    metric = _range_tokens(parts)
+    if not metric:
+        return
+    period = deck.period or parts.period
+    scenario = _range_scenario(period, deck.col_label, label)
+    if scenario is None:
+        return
+    scenario = scenario or _period_scenario(period, deck.context)
+    qualifiers = (parts.qualifiers | normalize_qualifiers(deck.qualifiers, index.config)) - _RANGE_QUALIFIERS
+    positions = {i for token in metric for i in index.postings.get(token, ())}
+    for i in positions:
+        cell = index.values[i]
+        cell_period = index.periods[i]
+        if (cell.hidden or (cell.sheet_priority is not None and cell.sheet_priority < 1.0)
+                or cell.unit != deck.unit
+                or (period and period_affinity(period, cell_period) != 1.0)
+                or index.is_change(i) != _is_change(deck, label)
+                or ((index.quals[i] - _RANGE_QUALIFIERS) ^ qualifiers) & _SOURCE_QUALIFIERS):
+            continue
+        cell_scenario = _range_scenario(cell_period, cell.col_label, cell.row_label, cell.named_range,
+                                         cell.section_label)
+        if cell_scenario is None or (scenario and scenario != cell_scenario):
+            continue
+        row = index.parts(cell.row_label)
+        col = index.parts(cell.col_label)
+        if time_span and not stat_groups(cell.col_label, cell.row_label):
+            axis, fixed, header = "row", cell.row, col
+        elif not time_span and stat_groups(cell.col_label) == {role} and not stat_groups(cell.row_label):
+            axis, fixed, header = "row", cell.row, col
+        elif not time_span and stat_groups(cell.row_label) == {role} and not stat_groups(cell.col_label):
+            axis, fixed, header = "column", cell.col, row
+        else:
+            continue
+        row_tokens = _range_tokens(row) - _RANGE_ROLE_WORDS[role]
+        col_tokens = _range_tokens(col) - _RANGE_ROLE_WORDS[role]
+        cell_metric = row_tokens | col_tokens
+        if _RANGE_ENTITY_SCOPE.search(cell.section_label):
+            section = _RANGE_ENTITY_SCOPE.sub(" ", cell.section_label)
+            cell_metric |= _range_tokens(index.parts(section))
+        if deck.unit == "multiple" and "multiple" not in metric:
+            cell_metric = cell_metric - {"multiple"}
+        # A generic range row can identify a per-share valuation entirely in its header.
+        if cell_metric == {"share"} and metric == {"value", "share"} and "per share" in label.lower():
+            cell_metric = cell_metric | {"value"}
+        if metric != cell_metric:
+            continue
+        comparison = source_comparison(deck, cell, precise)
+        if comparison and comparison.ok and not comparison.inferred:
+            key = (cell.workbook, cell.sheet_name, cell.section_label, axis, fixed,
+                   cell_metric, _range_tokens(header) - _RANGE_ROLE_WORDS[role],
+                   () if time_span else (cell_period, cell_scenario), cell.currency, index.quals[i] - _RANGE_QUALIFIERS)
+            yield key, cell, comparison
+
+
+def _explicit_time_span(low, high):
+    if not (low.period and high.period and low.period != high.period):
+        return False
+    periods = find_periods(low.context)
+    return any(
+        first.key == low.period and second.key == high.period
+        and re.fullmatch(r"\s*(?:[-–—]|to|through)\s*", low.context[end:start], re.I)
+        for (first, _, end), (second, start, _) in zip(periods, periods[1:])
+    )
+
+
+def verify_range_pairs(matches, index, precise, *, recover=False):
+    """Apply the same evidence standard to direct matches and source discovery."""
     groups = {}
+    eligible = {"matched"} | UNRESOLVED
     for pos, match in enumerate(matches):
         deck = match.deck
-        if (deck.range_role and deck.char_end > deck.char_start and deck.comparator == "="
-                and "guidance" not in deck.qualifiers and deck.label):
+        if deck.is_range and deck.char_end > deck.char_start:
             key = (deck.slide_number, deck.shape_id, deck.paragraph_index,
                    deck.table_row, deck.table_col, deck.context)
             groups.setdefault(key, []).append(pos)
 
-    def endpoints(match, role):
-        deck = match.deck
-        options = [match.model] if match.status == "matched" else [
-            value for value, _ in match.source_options or ()
-        ]
-        cells = []
-        period = deck.period or index.parts(deck.label).period
-        for value in options:
-            if (value is None or value.hidden or value.unit != deck.unit
-                    or (period and (period_affinity(period, value.period) or 0) < 0.85)):
-                continue
-            base = index.parts(value.col_label).tokens or index.parts(value.row_label).tokens
-            if not base or stat_groups(value.col_label) != {role}:
-                continue
-            comparison = source_comparison(deck, value, precise)
-            if comparison and comparison.ok and not comparison.inferred:
-                cells.append(((value.workbook, value.sheet_name, value.row, base), value, comparison))
-        return cells
-
+    verified = set()
     for positions in groups.values():
         positions.sort(key=lambda pos: matches[pos].deck.char_start)
         for low_pos, high_pos in zip(positions, positions[1:]):
@@ -336,23 +410,47 @@ def _verify_range_pairs(matches, index, precise):
             if (low.deck.range_role != "low" or high.deck.range_role != "high"
                     or low.deck.label.casefold() != high.deck.label.casefold()
                     or low.deck.unit != high.deck.unit
-                    or not all(m.status in UNRESOLVED or m.status == "matched" for m in (low, high))
-                    or not any(m.status in UNRESOLVED for m in (low, high))):
+                    or any(m.status not in eligible or m.deck.comparator != "="
+                           or "guidance" in m.deck.qualifiers for m in (low, high))
+                    or (not recover and any(m.status != "matched" for m in (low, high)))):
                 continue
-            high_cells = endpoints(high, "max")
-            pairs = [((low_cell, low_check), (high_cell, high_check))
-                     for low_key, low_cell, low_check in endpoints(low, "min")
-                     for high_key, high_cell, high_check in high_cells if low_key == high_key]
+            time_span = _explicit_time_span(low.deck, high.deck)
+            highs = {}
+            for key, cell, check in _range_cells(high.deck, index, precise, "max", time_span=time_span):
+                highs.setdefault(key, []).append((cell, check))
+            pairs = []
+            for key, cell, check in _range_cells(low.deck, index, precise, "min", time_span=time_span):
+                for high_cell, high_check in highs.get(key, ()):
+                    if cell.ref == high_cell.ref or (not time_span and check.model_value > high_check.model_value):
+                        continue
+                    pairs.append(((cell, check), (high_cell, high_check)))
+                    if len(pairs) > 1:
+                        break
+                if len(pairs) > 1:
+                    break
             if len(pairs) != 1:
                 continue
-            for pos, (value, comparison) in zip((low_pos, high_pos), pairs[0], strict=True):
+            if not recover and (low.model is not pairs[0][0][0] or high.model is not pairs[0][1][0]):
+                continue
+            for pos, (cell, check) in zip((low_pos, high_pos), pairs[0], strict=True):
                 match = matches[pos]
-                if match.status in UNRESOLVED:
+                verified.add(pos)
+                if match.status != "matched" or match.model is not cell:
                     matches[pos] = replace(
-                        match, model=value, comparison=comparison, status="matched", method="range_pair",
+                        match, model=cell, comparison=check, status="matched", method="range_pair",
                         confidence=min(0.8, match.deck.confidence),
-                        note="Both displayed endpoints reconcile to the same labelled workbook range.",
+                        note="Both displayed endpoints reconcile to the same workbook range.",
                     )
+
+    for pos, match in enumerate(matches):
+        if match.deck.is_range and match.status in {"matched", "matched_value_only"} and pos not in verified:
+            options = list(match.source_options or ())
+            if match.model and all(cell.ref != match.model.ref for cell, _ in options):
+                options.append((match.model, match.model.period))
+            matches[pos] = replace(
+                match, model=None, comparison=None, status="unmatched", method="", confidence=0.0,
+                source_options=options, note="Could not corroborate both endpoints as one workbook range.",
+            )
 
 
 def review_sources(matches, index, config, warnings, ai_config=None):
@@ -381,10 +479,13 @@ def review_sources(matches, index, config, warnings, ai_config=None):
         truncated = len(rank) > MAX_CANDIDATES
         results[pos] = _verified_source(updated, index, ranked, truncated, precise, "")
         if results[pos].status in UNRESOLVED:
-            results[pos].source_options = _inspection_sources(deck, index, precise, reconciling)
+            options = _inspection_sources(deck, index, precise, reconciling)
+            seen = {cell.ref for cell, _ in options}
+            options.extend((cell, period) for cell, period in match.source_options or () if cell.ref not in seen)
+            results[pos].source_options = options
             if eligible:
                 pending[str(pos)] = (ranked, truncated)
-    _verify_range_pairs(results, index, precise)
+    verify_range_pairs(results, index, precise, recover=True)
     suggestions = {}
     ai_targets = []
     if ai_config is not None:
@@ -399,8 +500,14 @@ def review_sources(matches, index, config, warnings, ai_config=None):
             if not ref or key not in pending:
                 continue
             pos = int(key)
-            updated = replace(results[pos], source_suggestion=ref)
-            results[pos] = _verified_source(updated, index, *pending[key], precise, ref)
+            match = results[pos]
+            selected = next((value for value, _ in match.source_ai_options if value.ref == ref), None)
+            if selected is None:
+                continue
+            updated = replace(match, source_suggestion=ref)
+            checked = _verified_source(updated, index, *pending[key], precise, ref)
+            checked.record_ai_source(selected, "used" if checked.method == "source_ai" else "suggested")
+            results[pos] = checked
     checked = [m for original, m in zip(matches, results) if original.status in UNRESOLVED]
     return results, {
         "searched": len(checked),

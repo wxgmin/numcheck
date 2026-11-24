@@ -30,6 +30,7 @@ from numcheck.matching.label_matcher import (
 )
 from numcheck.matching.llm_matcher import MAX_CANDIDATES, build_entry
 from numcheck.matching.normalizer import compare, dimensions_compatible
+from numcheck.matching.source_search import display_precision, verify_range_pairs
 from numcheck.matching.value_match import significant_digits_of
 from numcheck.models import DeckNumber, Match, ModelValue, ReviewWarning, SlideInfo
 from numcheck.periods import parse_period, period_key
@@ -808,6 +809,7 @@ def _run_llm(pending: list[tuple[Match, _Deck, _Label]], index: ModelIndex, conf
         m.score = lab.score
         m.confidence = 0.7 * (0.9 if cmp_ is not None and cmp_.inferred else 1.0)
         m.status = "matched" if cmp_ is not None and cmp_.ok else "mismatch"
+        m.record_ai_source(mv, "used")
         m.note = ("source cell is an Excel error; " if mv.is_error else "") + \
             f"AI suggested this source from {len(m.candidates)} equally labelled cells (labels only)"
 
@@ -936,6 +938,8 @@ def match_deck_to_model(
 
     if pending and _llm_enabled(config):
         _run_llm(pending, index, config, warnings)
+
+    verify_range_pairs(results, index, display_precision(config))
 
     if old_model_values:
         try:

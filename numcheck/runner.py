@@ -188,6 +188,39 @@ def _findings(deck, matches, config):
     return issues, coverage
 
 
+def refresh_findings(result, matches, config, next_issue_id, previous_issues=()):
+    """Rebuild findings while keeping IDs for unchanged or restored issues."""
+    issues, coverage = _findings(result.extraction, matches, config)
+
+    def identity(issue):
+        return (issue.deck_uid, issue.issue_type, issue.check, issue.slide_number,
+                issue.shape_id, issue.paragraph_index, issue.char_start, issue.table_row,
+                issue.table_col, issue.deck_value, issue.metric_key)
+
+    old_ids = {identity(issue): issue.id for issue in [*previous_issues, *result.issues]}
+    for issue in issues:
+        previous = old_ids.pop(identity(issue), None)
+        if previous is None:
+            previous = next_issue_id
+            next_issue_id += 1
+        issue.id = previous
+    return issues, coverage, next_issue_id
+
+
+def revise_source_matches(result, matches, config, deck_path, out_dir, annotate,
+                          next_issue_id, previous_issues=(), *, recheck=False):
+    """Publish changed source selections and regenerate their report files."""
+    issues, coverage = result.issues, result.coverage
+    if recheck:
+        issues, coverage, next_issue_id = refresh_findings(
+            result, matches, config, next_issue_id, previous_issues,
+        )
+    updated = replace(result, matches=matches, issues=issues, coverage=coverage, files={},
+                      warnings=list(result.warnings))
+    _write_reports(updated, deck_path, out_dir, annotate)
+    return updated, next_issue_id
+
+
 def refine_sources(result, index, config, ai_config, deck_path, out_dir, annotate, next_issue_id):
     """Build a new review snapshot and its exports without mutating the published review."""
     start = time.time()
@@ -195,20 +228,7 @@ def refine_sources(result, index, config, ai_config, deck_path, out_dir, annotat
     matches, summary = review_sources(result.matches, index, config, warnings, ai_config)
     issues, coverage = result.issues, result.coverage
     if summary["verified"]:
-        issues, coverage = _findings(result.extraction, matches, config)
-
-        def identity(issue):
-            return (issue.deck_uid, issue.issue_type, issue.check, issue.slide_number,
-                    issue.shape_id, issue.paragraph_index, issue.char_start, issue.table_row,
-                    issue.table_col, issue.deck_value, issue.metric_key)
-
-        old_ids = {identity(issue): issue.id for issue in result.issues}
-        for issue in issues:
-            previous = old_ids.pop(identity(issue), None)
-            if previous is None:
-                previous = next_issue_id
-                next_issue_id += 1
-            issue.id = previous
+        issues, coverage, next_issue_id = refresh_findings(result, matches, config, next_issue_id)
 
     updated = replace(result, matches=matches, issues=issues, coverage=coverage, source_review=summary,
                       warnings=_dedupe_warnings([*result.warnings, *warnings]), files={},

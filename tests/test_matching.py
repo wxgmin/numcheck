@@ -28,6 +28,85 @@ def run(decks, values, cfg=None, **kw):
     return match_deck_to_model(decks, values, cfg or Config(), **kw)
 
 
+def test_derived_cagr_alternative_phrasings():
+    from numcheck.matching.derived import verify_derived
+
+    config = Config()
+    values = [mv("Revenue", 1000, period="fy22"), mv("Revenue", 1210, period="fy24", addr="D2")]
+    cases = [
+        ("Revenue CAGR", "of 10% (FY22-FY24)"),
+        ("Revenue compound annual growth rate", "of 10% from 2022 to 2024"),
+        ("Revenue compounded annually", "at 10% between 2022 and 2024"),
+        ("Revenue growth per annum", "of 10% over 2022\u20132024"),
+        ("Revenue", "grew 10% annually from 2022 to 2024"),
+        ("Revenue CAGR", "of 10% on a 2-year basis to FY24"),
+    ]
+    for label, tail in cases:
+        context = f"{label} {tail}"
+        start = context.index("10%")
+        d = dn(label, 10.0, "10%", unit="percent", scale="", decimals=1,
+               context=context, char_start=start, char_end=start + 3)
+        match = Match(d, None, "unmatched")
+        assert verify_derived([match], values, config) == 1
+        assert match.status == "matched" and match.method == "derived", (label, match.status, match.note)
+        assert {cell.cell_address for cell in match.derivation_inputs} == {"B2", "D2"}
+
+
+def test_derived_growth_distinguishes_total_change_and_rejects_incompatible_series():
+    from numcheck.matching.derived import verify_derived
+
+    def claim():
+        context = "Sales grew 21% between 2022 and 2024"
+        return Match(dn("Sales", 21, "21%", unit="percent", scale="", context=context,
+                        char_start=context.index("21%")), None, "unmatched")
+
+    start = mv("Revenue", 1000, period="fy22", row=2, currency="USD")
+    match = claim()
+    assert verify_derived([match], [start, mv("Revenue", 1210, period="fy24", row=2, currency="USD")], Config()) == 1
+    assert match.status == "matched"
+    assert "cumulative growth" in match.note
+
+    for end in (
+        mv("Revenue", 1210, period="fy24", row=3, currency="USD"),
+        mv("Revenue", 1210, period="fy24", row=2, currency="EUR"),
+        mv("Revenue", 1210, period="fy24", row=2, currency="USD", workbook="other.xlsx"),
+    ):
+        match = claim()
+        assert verify_derived([match], [start, end], Config()) == 0
+        assert match.status == "unmatched"
+
+
+def test_derived_return_ratio_from_model():
+    from numcheck.matching.derived import verify_derived
+
+    config = Config()
+    values = [mv("Net Income", 100, period="fy24"), mv("Average Equity", 500, period="fy24")]
+    d = dn("ROE", 20.0, "20%", unit="percent", scale="", period="fy24", decimals=0,
+           context="ROE 20%", char_start=0, char_end=3)
+    match = Match(d, None, "unmatched")
+    assert verify_derived([match], values, config) == 1
+    assert match.status == "matched" and match.method == "derived"
+
+    # A year-end value alone is not evidence for an average-balance return.
+    match = Match(d, None, "unmatched")
+    assert verify_derived([match], [values[0], mv("Equity", 500, period="fy24")], config) == 0
+
+
+def test_derived_multiples_and_premiums_use_their_display_units():
+    from numcheck.matching.derived import verify_derived
+
+    cases = [
+        ("Current Ratio", "2.0x", 2, "multiple", "Current Assets", 200, "Current Liabilities", 100),
+        ("Offer Premium", "25%", 25, "percent", "Offer Price", 25, "Unaffected Price", 20),
+    ]
+    for label, raw, expected, unit, numerator, num_value, denominator, den_value in cases:
+        match = Match(dn(label, expected, raw, unit=unit, scale="", period="fy24"), None, "unmatched")
+        values = [mv(numerator, num_value, period="fy24"), mv(denominator, den_value, period="fy24", addr="B3")]
+        assert verify_derived([match], values, Config()) == 1
+        assert match.status == "matched"
+        assert match.comparison.dimension == unit
+
+
 def test_source_review_requires_independent_label_scope_and_value_evidence(monkeypatch):
     def choose_first(entries, config, warnings):
         return {entry["id"]: "candidate-1" for entry in entries}
@@ -190,10 +269,18 @@ def test_diluted_vs_basic_eps():
     assert r[0].status == "matched" and r[0].model.cell_address == "B3"
 
 
-def test_range_role_prefers_low_high_cells():
-    vals = [mv("EV Low", 900, addr="B2"), mv("EV High", 1100, addr="B3")]
-    r = run([dn("Enterprise value", 1100, "$1,100m", is_range=True, range_role="high")], vals)
-    assert r[0].status == "matched" and r[0].model.cell_address == "B3"
+def test_range_verifies_vertical_endpoints_and_leaves_an_orphan_in_inspect():
+    vals = [mv("EV Low", 900, addr="B2", row=2, col=2),
+            mv("EV High", 1100, addr="B3", row=3, col=2)]
+    shared = {"is_range": True, "context": "Enterprise value of $900m–$1,100m"}
+    low = dn("Enterprise value", 900, "$900m", range_role="low", char_start=20, char_end=25, **shared)
+    high = dn("Enterprise value", 1100, "$1,100m", range_role="high", char_start=26, char_end=33, **shared)
+    matches, _ = review_sources([Match(deck, None, "unmatched") for deck in (low, high)],
+                                ModelIndex(vals, Config()), Config(), [])
+    assert [m.model.cell_address for m in matches] == ["B2", "B3"]
+    orphan = run([high], vals)[0]
+    assert orphan.status == "unmatched"
+    assert orphan.source_options == [(vals[1], "")]
 
 
 # --------------------------------------------------------------------------- periods
