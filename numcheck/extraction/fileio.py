@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -122,10 +123,16 @@ def _decrypt(p: Path, password: str) -> str:
 
 
 def soffice_binary() -> str | None:
-    """Path to LibreOffice's soffice, if installed."""
+    """Find an explicitly configured, bundled or installed LibreOffice."""
     configured = os.environ.get("NUMCHECK_SOFFICE")
     if configured and Path(configured).is_file():
         return configured
+    if getattr(sys, "frozen", False):
+        program = Path(sys.executable).parent / "LibreOffice" / "program"
+        for name in ("soffice.com", "soffice.exe"):
+            launcher = program / name
+            if launcher.is_file():
+                return str(launcher)
     for name in ("soffice", "libreoffice", "soffice.exe"):
         found = shutil.which(name)
         if found:
@@ -158,6 +165,7 @@ def soffice_convert(src: str, out_dir: str, target: str, timeout: int = 180) -> 
                 [exe, "-env:UserInstallation=" + Path(profile).as_uri(), "--headless", "--norestore",
                  "--convert-to", target, "--outdir", out_dir, src],
                 check=False, capture_output=True, timeout=timeout,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if result.returncode:
                 return None

@@ -361,6 +361,22 @@ def test_chatgpt_loopback_connection_and_provider_check(client, monkeypatch, tmp
     assert not restored.status()["connected"]
 
 
+def test_portable_preview_finds_renderer_next_to_the_executable(tmp_path, monkeypatch):
+    from numcheck.extraction import fileio
+
+    root = tmp_path / "Unpacked NumCheck"
+    program = root / "LibreOffice" / "program"
+    program.mkdir(parents=True)
+    renderer = program / "soffice.com"
+    renderer.touch()
+    monkeypatch.delenv("NUMCHECK_SOFFICE", raising=False)
+    monkeypatch.setattr(fileio.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(fileio.sys, "executable", str(root / "NumCheck.exe"))
+    monkeypatch.setattr(fileio.shutil, "which", lambda name: None)
+    assert fileio.soffice_binary() == str(renderer)
+    assert create_app().test_client().get("/api/meta").get_json()["slide_preview"] is True
+
+
 def test_demo_source_preview_uses_original_location_and_retains_downloads(tmp_path, monkeypatch):
     import hashlib
 

@@ -58,10 +58,10 @@ files.
 
 ## Install
 
-For the portable Windows x64 build, extract the distribution zip and launch
-`NumCheck.exe`. Keep the console open while you work in the browser. The
-application binds only to this computer. It includes an offline sample review,
-so a teammate can try it before uploading any files.
+For the portable Windows x64 build, extract the entire distribution ZIP and
+launch `NumCheck.exe`. Keep the console open while you work in the browser.
+The package includes the slide renderer, workbook review, OCR and an offline
+sample review. The application binds only to this computer.
 
 Source installs require Python 3.12+.
 
@@ -172,17 +172,27 @@ review request. Cloud assistance sends candidate labels and source identifiers,
 which can contain deal names. Add terms to redact or keep assistance off.
 
 Workbook previews run locally from saved workbook data. They show a bounded
-cell grid with common Excel number formats. Slide previews require LibreOffice,
-plus the `preview` extra for source installations (`pip install -e ".[llm,preview]"`).
-The portable app includes PDF rendering and finds LibreOffice on PATH or in its
-standard installation location. Set `NUMCHECK_SOFFICE` to use a different
-installation. LibreOffice may lay out fonts or charts differently from
+cell grid with common Excel number formats. The Windows ZIP includes LibreOffice
+and PDF rendering. For a source installation, install the `preview` extra
+(`pip install -e ".[llm,preview]"`) and make LibreOffice available on PATH or set
+`NUMCHECK_SOFFICE` to its executable. LibreOffice may lay out fonts or charts differently from
 PowerPoint. When text cannot be located uniquely, the viewer highlights its
 containing cell or object when available. Files remain downloadable from the
 viewer even when a preview is unavailable.
 
 The UI works offline, uses no external assets, and deletes uploaded files
 after two hours or on demand.
+
+### Build the Windows ZIP
+
+Use a Windows x64 Python environment. Create an administrative image from the
+official LibreOffice x64 MSI with `msiexec /a`, then locate the extracted
+directory containing `program`, `share` and `System64`.
+
+```powershell
+python -m pip install -e ".[llm,preview,ocr,crypto]" pyinstaller
+python tools/build_windows.py --libreoffice "C:\build\LibreOffice" --output "dist\NumCheck-Windows-x64.zip"
+```
 
 ### CLI
 

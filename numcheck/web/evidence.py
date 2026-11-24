@@ -178,7 +178,8 @@ def slide_preview(path: Path, directory: Path, location, token: str, *, exact_te
     pdf = directory / f"{path.stem}.pdf"
     if not pdf.is_file():
         if not soffice_binary():
-            raise PreviewUnavailable("Install LibreOffice on this computer to render the original PowerPoint.")
+            raise PreviewUnavailable("The PowerPoint renderer is unavailable. "
+                                     "Extract the full NumCheck Windows package, including its LibreOffice folder.")
         directory.mkdir(exist_ok=True)
         export = 'pdf:impress_pdf_Export:{"ExportHiddenSlides":{"type":"boolean","value":"true"}}'
         with TemporaryDirectory(dir=directory) as staging:
