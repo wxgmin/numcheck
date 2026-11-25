@@ -75,7 +75,21 @@ def _named_entities(d: DeckNumber) -> frozenset[str]:
         stop = min([i for i in (after.find(". "), after.find("; "), after.find("\n")) if i >= 0] or [len(after)])
         ctx = before[cut + 1:] + after[:stop]
     text = f"{d.slide_context or d.slide_title or ''} | {ctx}"
-    return frozenset(f"{m.group(1).lower()} {m.group(2).lower()}" for m in _NAMED_ENTITY_RE.finditer(text))
+    out = {f"{m.group(1).lower()} {m.group(2).lower()}" for m in _NAMED_ENTITY_RE.finditer(text)}
+    # "Behavioral Health revenue grew ... a 22.2% CAGR": a capitalised name right before the metric word
+    for m in _SUBJECT_ENTITY_RE.finditer(ctx):
+        words = [w for w in m.group(1).split() if w.lower() not in _GENERIC_CAPS]
+        if words:
+            out.add(" ".join(words).lower())
+    return frozenset(out)
+
+
+_SUBJECT_ENTITY_RE = re.compile(
+    r"((?:[A-Z][A-Za-z&'-]+\s+){1,3})(?:revenues?|sales|ebitda|ebit|margins?|income|volumes?|bookings|arr|"
+    r"contribution|profit|segment|division|business)\b")
+_GENERIC_CAPS = {"total", "group", "adj", "adj.", "adjusted", "net", "gross", "reported", "organic", "pro", "forma",
+                 "consolidated", "company", "annual", "fiscal", "combined", "standalone", "operating", "recurring",
+                 "the", "our", "its", "fy", "ltm", "ntm", "q1", "q2", "q3", "q4", "h1", "h2", "core", "underlying"}
 
 
 def _entity(d: DeckNumber, vocab: frozenset[str]) -> frozenset[str]:
@@ -151,7 +165,7 @@ def check_cross_slide(deck_numbers: list[DeckNumber], config: Config, collector:
     groups: dict[tuple, list[_Entry]] = defaultdict(list)
     vocab = _entity_vocab(matches)
     for d in deck_numbers:
-        if d.skip_reason or d.comparator in (">", ">=", "<", "<=") or d.is_range:
+        if d.skip_reason or d.label_cell or d.comparator in (">", ">=", "<", "<=") or d.is_range:
             continue   # bounds and ranges ("10-12% target") are not point claims to compare
         key = _group_key(d, config, vocab)
         if key is None:

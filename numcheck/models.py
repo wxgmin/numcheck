@@ -111,6 +111,8 @@ class DeckNumber:
     footnote_refs: list[str] = field(default_factory=list)
     qualifiers: list[str] = field(default_factory=list)   # e.g. ["adjusted", "pro forma", "diluted"]
     skip_reason: str = ""         # non-empty -> extracted but should not be matched (year, marker…)
+    label_cell: bool = False      # figure inside a table row-label cell ("6.375% Senior notes"): not a grid value
+    block: str = ""               # table block heading ("Brenner" over its rows): an entity hint, not label text
     uid: str = ""                 # stable id: f"s{slide}-{shape}-{p}-{start}" (set by extractor)
 
 

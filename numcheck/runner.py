@@ -127,11 +127,19 @@ def run_review(
             m.status = "unmatched"
             m.note = (m.note + "; " if m.note else "") + "forward-looking target/guidance differs from the model"
     try:
-        from numcheck.matching.derived import verify_adjustments, verify_derived, verify_pie_shares
+        from numcheck.matching.derived import (
+            verify_adjustments,
+            verify_derived,
+            verify_from_to,
+            verify_pie_shares,
+            verify_table_shares,
+        )
 
         verify_derived(matches, model_values, config, slides=deck.slides)
         verify_adjustments(matches, model_values, config)
         verify_pie_shares(matches, model_values, config)
+        verify_table_shares(matches, config)
+        verify_from_to(matches, config, model_values)
     except Exception:  # noqa: BLE001 - an optional enrichment must not abort the review
         log.exception("derived verification failed")
         warnings.append(ReviewWarning("derived_failed", "Derived growth/margin verification was skipped."))
@@ -140,10 +148,12 @@ def run_review(
         from numcheck.matching.text_mentions import (
             corroborate_value_only,
             resolve_ambiguous_by_value,
+            resolve_label_figures,
             verify_text_mentions,
         )
 
         resolve_ambiguous_by_value(matches, model_values, config)
+        resolve_label_figures(matches, model_values, config)
         verify_text_mentions(matches, model_texts)
         corroborate_value_only(matches)
     except Exception:  # noqa: BLE001 - an optional enrichment must not abort the review

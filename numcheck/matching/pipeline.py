@@ -20,8 +20,16 @@ from functools import lru_cache
 from numcheck.config import Config
 from numcheck.llm import resolve_ambiguous
 from numcheck.matching.alignment import AlignResult, align_blocks
-from numcheck.matching.index import VIEW_NAMED, DeckQuery, ModelIndex, covenant_words, stat_groups
+from numcheck.matching.index import (
+    VIEW_NAMED,
+    DeckQuery,
+    ModelIndex,
+    covenant_words,
+    expresses_change,
+    stat_groups,
+)
 from numcheck.matching.label_matcher import (
+    STRICT_QUALIFIERS,
     LabelParts,
     metric_key,
     normalize_qualifiers,
@@ -52,6 +60,7 @@ MIN_LABEL_SCORE = 0.35          # default of Config.min_label_score (kept for im
 BAND = 0.05                     # label scores within BAND of the best are "tied" (value decides among ties)
 NEAR_BAND = 0.15                # a clear winner that mismatches yields to a near-label cell that matches
 STRONG_LABEL = 0.8              # a label score this high outranks a structural alignment
+WEAK_COVERAGE = 0.5             # a label-only mismatch needs the labels to share at least this much (either side)
 MAX_CANDS = 300
 
 
@@ -61,6 +70,7 @@ class _Cand:
     score: float
     kind: str = ""              # which label view produced the score
     base: float = 0.0
+    boost: float = 0.0          # sibling-coherence boost included in score
 
 
 @dataclass
@@ -79,6 +89,13 @@ class _Deck:
     stats: frozenset = frozenset()                        # mean/median/min/max words of the deck label
     cov_words: frozenset = frozenset()                    # covenant words the deck label itself uses
     change: bool = False                                  # the deck number expresses a change, not a level
+    rate_words: frozenset = frozenset()                   # cagr / margin / yield: the cell must name them too
+    metric_tokens: frozenset = frozenset()                # non-entity label tokens
+    entities: frozenset = frozenset()                     # companies / segments the model also labels cells with
+    share: bool = False                                   # the deck figure is a share ("% of total", "mix")
+    change_words: bool = False                            # label or nearby words say the figure is a change
+    flow: bool = False                                    # "repaid", "redeemed": a flow, never a balance cell
+    block_entities: frozenset = frozenset()               # entity named by the table block heading (soft)
 
 
 @dataclass
@@ -118,9 +135,111 @@ def assign_metric_keys(deck_numbers: list[DeckNumber], model_values: list[ModelV
             mv.metric_key = metric_key(f"{mv.named_range} {mv.row_label} {mv.col_label}", config) or "unnamed"
 
 
+_METRIC_COLUMN_RE = re.compile(
+    r"%|\bcagr\b|\bgrowth\b|\bmargin\b|\bshare\b|\bmix\b|\bchange\b|\by/?o?/?y\b|\bratio\b|\bmultiple\b|"
+    r"\bper\b|\bx\s+\w|\w\s*/\s*\w|\bcontribution\b|\bcoverage\b|\bleverage\b|\byield\b|\bpremium\b|\bimplied\b", re.I)
+
+
+_RATE_WORDS = frozenset({"cagr", "margin", "yield"})
+_FLOW_DECK_TOKENS = frozenset({"repaid", "redeemed", "prepaid", "amortised", "amortized", "repurchased", "bought"})
+_FLOW_TOKENS = frozenset({"repaid", "repay", "repayment", "repayments", "redeemed", "redemption", "prepaid", "prepayment",
+                          "amortization", "amortisation", "amortised", "amortized", "paid", "repurchased", "repurchase",
+                          "buyback", "sweep", "paydown"})
+# "NAV increased by EUR 21.0m", "up 39", "net 39 new": the words right before a figure say it is a change
+_CHANGE_CUE_RE = re.compile(r"\b(?:increased?|increases|decreased?|decreases|rose|risen|fell|fallen|grew|grown|"
+                            r"declined?|up|down|added|adds|change[sd]?|net|movement|higher|lower)\b"
+                            r"[^.;]{0,30}$", re.I)
+_BARE_RATE = frozenset({"margin", "growth", "cagr", "change", "yield"})
+_SUBJECT_RE = re.compile(
+    r"\b((?:adj(?:usted|\.)?\s+|reported\s+|pro\s+forma\s+|organic\s+|net\s+)?"
+    r"(?:ebitda|ebita|ebit|revenues?|net\s+sales|sales|gross\s+profit|operating\s+(?:income|profit)|"
+    r"net\s+income|free\s+cash\s+flow|fcf|eps|noi|ffo|affo|arr|bookings|backlog))\b", re.I)
+
+
+def _sentence_subject(d: DeckNumber, label: str) -> str:
+    """"Adj. EBITDA increased 17.9% to $150.6m; margin expanded 76bps to 19.0%": a bare "margin" or
+    "growth" takes the metric named earlier in the same sentence."""
+    ctx = d.context or ""
+    if not ctx or d.table_row >= 0:
+        return ""
+    end = d.char_start if 0 < d.char_start <= len(ctx) else len(ctx)
+    pre = re.split(r"(?<=[.!?])\s+|\n", ctx[:end])[-1]
+    hits = _SUBJECT_RE.findall(pre)
+    return hits[-1] if hits else ""
+
+
+_SHARE_RE = re.compile(r"%\s*of\b|\bshare\s+of\b|\b(?:revenue|sales|product|segment|debt|capital)\s+mix\b|"
+                       r"\bmix\s*\(%\)|\bweighting\b|\bpercentage\s+of\b", re.I)
+
+
+_HDR_MONTH_RE = re.compile(r"(?<![A-Za-z])(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[-\s'/]+((?:19|20)?\d{2})(?![\d])",
+                           re.I)
+_MONTH_NUM = {m: k for k, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
+                                          "dec"), start=1)}
+
+
+def _header_periods(index: ModelIndex, i: int) -> frozenset[str]:
+    """Every period the cell's column header names ("Q3 FY25 Mar-25" -> fy25q3 and y25mo03)."""
+    cache = getattr(index, "_hdr_periods", None)
+    if cache is None:
+        cache = index._hdr_periods = {}
+    hit = cache.get(i)
+    if hit is None:
+        from numcheck.periods import find_periods
+
+        col = index.values[i].col_label or ""
+        keys = {p.key for p, _s, _e in find_periods(col)}
+        for m in _HDR_MONTH_RE.finditer(col):   # "Q3 FY25 Mar-25": the quarter-end month as well
+            mon = _MONTH_NUM.get(m.group(1).lower()[:3])
+            yy = int(m.group(2)) % 100
+            if mon:
+                keys.add(f"y{yy:02d}mo{mon:02d}")
+        hit = cache[i] = frozenset(keys)
+    return hit
+
+
+def _is_share_cell(index: ModelIndex, i: int) -> bool:
+    cache = getattr(index, "_share_cells", None)
+    if cache is None:
+        cache = index._share_cells = {}
+    hit = cache.get(i)
+    if hit is None:
+        mv = index.values[i]
+        hit = cache[i] = bool(_SHARE_RE.search(f"{mv.row_label} {mv.col_label}"))
+    return hit
+
+
+def _model_entities(index: ModelIndex) -> dict[str, int]:
+    """Tokens the model uses in row/column labels of value cells, with how many cells use them.
+
+    A company or segment named in row/column labels ("Castellane net debt", "Brenner shares") is a
+    discriminating entity; a deal code name only on a cover sheet or title is not."""
+    cached = getattr(index, "_entity_counts", None)
+    if cached is None:
+        # Count DISTINCT labels using the token: "Brenner" prefixes many rows (P/E, shares, price), while
+        # "Clinics" is one metric row repeated across columns.
+        labels: dict[str, set] = defaultdict(set)
+        for i in range(index.n):
+            mv = index.values[i]
+            for t in index.row_tokens(i):
+                labels[t].add((mv.row_label or "").strip().lower())
+            for t in index.col_tokens(i):
+                labels[t].add((mv.col_label or "").strip().lower())
+            for t in index.label_tokens(i) - index.row_tokens(i) - index.col_tokens(i):
+                labels[t].add((mv.row_label or "").strip().lower())   # a block title over several rows
+        cached = Counter({t: len(v) for t, v in labels.items()})
+        index._entity_counts = cached
+    return cached
+
+
 def _prepare(pos: int, d: DeckNumber, index: ModelIndex, config: Config, soft: str) -> _Deck:
     label = _label_text(d)
     parts: LabelParts = split_label(label, config)
+    if parts.tokens and parts.tokens <= _BARE_RATE:
+        subject = _sentence_subject(d, label)
+        if subject:
+            label = f"{subject} {label}"
+            parts = split_label(label, config)
     if not parts.tokens:
         alt = " ".join(x for x in (d.row_label, d.col_label, d.chart_series_name, (d.context or "")[:200]) if x)
         parts2 = split_label(alt, config)
@@ -135,7 +254,10 @@ def _prepare(pos: int, d: DeckNumber, index: ModelIndex, config: Config, soft: s
     query = index.query(parts.tokens) if parts.tokens else None
     d.metric_key = metric_key(label, config) or "unnamed"
     st = _Deck(pos, d, label, query, frozenset(quals), period, "" if period else soft)
-    if d.row_label and d.row_label.strip() and d.row_label.strip() != label.strip():
+    if (d.row_label and d.row_label.strip() and d.row_label.strip() != label.strip()
+            and not _METRIC_COLUMN_RE.search(d.col_label or "")):
+        # Retrying with the row label alone is safe only when the column header is a period or a plain
+        # heading; "CAGR FY22A-24A", "% of total", "x EBITDA" columns define the metric of the cell.
         rtoks = split_label(d.row_label, config).tokens
         if rtoks and (query is None or rtoks != query.tokens):
             st.alt_query = index.query(rtoks)
@@ -152,6 +274,20 @@ def _prepare(pos: int, d: DeckNumber, index: ModelIndex, config: Config, soft: s
         from numcheck.matching.derived import _growth_intent
 
         st.change = _growth_intent(d) != 0
+    if query is not None and "cagr" in query.tokens:
+        st.change = True   # a CAGR is never a level or a share cell
+    st.share = (bool(_SHARE_RE.search(f"{label} {d.row_label} {d.col_label}")) or "share" in parts.tokens
+                or (d.unit == "percent" and bool(d.raw_text) and d.table_row < 0     # "15.9% of Group GWP"
+                    and bool(re.search(re.escape(d.raw_text) + r"\s+of\b", d.context or ""))))
+    st.metric_tokens = frozenset(parts.metric)
+    st.flow = bool(query is not None and query.tokens & _FLOW_DECK_TOKENS)
+    before = (d.context or "")[:d.char_start] if 0 < d.char_start <= len(d.context or "") else ""
+    st.change_words = bool(expresses_change(label) or d.raw_text.startswith(("+", "-")) or _CHANGE_CUE_RE.search(before))
+    st.entities = frozenset(e for e in parts.entity if _model_entities(index).get(e, 0) >= 2)
+    if d.block:
+        st.block_entities = frozenset(e for e in split_label(d.block, config).tokens
+                                      if _model_entities(index).get(e, 0) >= 2) - frozenset(parts.tokens)
+    st.rate_words = (query.tokens & _RATE_WORDS) if query is not None else frozenset()
     return st
 
 
@@ -170,7 +306,9 @@ def _period_factor(st: _Deck, model_period: str) -> float:
             return 0.97
         if aff >= 0.7:
             return 0.9
-        return 0.88
+        if aff >= 0.6:
+            return 0.88
+        return 0.75   # month-end vs year / quarter: a fallback only, never a tie with an exact-period cell
     if st.soft:
         aff = period_affinity(st.soft, model_period)
         if aff is None:
@@ -257,6 +395,12 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
         cell_stats = index.stats(i)
         if st.stats and cell_stats and not st.stats & cell_stats:
             continue   # Mean vs Median, Min vs Max ...: mutually exclusive statistics
+        if st.rate_words and not st.rate_words <= index.label_tokens(i):
+            continue   # "Physical Therapy CAGR" is not "Physical Therapy - % of total"
+        if st.flow and not (index.label_tokens(i) & _FLOW_TOKENS):
+            continue   # "Term Loan B repaid" is a repayment, never the tranche's balance
+        if not st.share and _is_share_cell(index, i):
+            continue   # a "% of total" cell is a share; "7.250%" in a Pricing column is not
         if st.change and not index.is_change(i):
             continue   # a change (bps, pp, QoQ ...) is never compared with a level cell
         if (index.quals[i] & _METRIC_DEFINING) - st.quals:
@@ -264,10 +408,16 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
         mp = index.periods[i]
         if horizon in ("ltm", "ntm") and mp == horizon and period_key(mv.row_label) == st.period:
             mp = st.period
+        if st.period and mp != st.period and st.period in _header_periods(index, i):
+            mp = st.period   # "Clinics at Mar-25" and a "Q3 FY25 Mar-25" column: the header names the same date
         if st.period and period_affinity(st.period, mp) == 0.0:
             excluded.append(_Cand(i, base, kind, base))
             continue
         f = qualifier_factor(st.quals, index.quals[i]) * _period_factor(st, mp)
+        if st.block_entities and not (st.block_entities & (index.label_tokens(i) | index.tokens_of(mv.sheet_name))):
+            f *= 0.9   # the table block names a company / segment this cell does not (soft: rows may be totals)
+        if not st.change and index.is_change(i) and not st.change_words:
+            f *= 0.6   # "479 locations" is a level; "Net new locations" / "Revenue growth" are changes
         pr = mv.sheet_priority if mv.sheet_priority is not None else 1.0
         f *= 0.8 + 0.2 * min(max(pr, 0.0), 1.0)
         if mv.hidden:
@@ -295,6 +445,18 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
             score += 0.05   # the modeller's own name for the cell
         cands.append(_Cand(i, score, kind, base))
         tiers.append(tier)
+    _relax_unstated_qualifiers(st, index, cands)
+    if st.entities and cands:
+        # "Castellane net debt / EBITDA": the model labels Castellane's own cells, so a cell that names
+        # neither Castellane (nor sits on a Castellane sheet) is another company's or the pro forma figure.
+        def _names_entity(c: _Cand) -> bool:
+            mv = vals[c.idx]
+            return bool(st.entities & (index.label_tokens(c.idx) | index.tokens_of(mv.sheet_name)))
+        kept = [(c, t) for c, t in zip(cands, tiers, strict=True) if _names_entity(c)]
+        if len(kept) < len(cands):
+            excluded.extend(c for c in cands if not _names_entity(c))
+            cands = [c for c, _ in kept]
+            tiers = [t for _, t in kept]
     if cands and 0 in tiers:
         # Context only breaks ties: cells that the label score already ranks clearly lower are left alone.
         floor = max(c.score for c in cands) - BAND
@@ -323,6 +485,29 @@ def _collect(st: _Deck, query: DeckQuery, index: ModelIndex, config: Config) -> 
 
 _METRIC_DEFINING = frozenset({"same store", "same property", "same center", "comparable store", "organic",
                               "like for like"})
+_RELAXABLE = frozenset({"adjusted", "pro forma"})
+_ADJUSTABLE_METRICS = frozenset({"ebitda", "ebita", "ebit", "eps", "earnings", "income", "profit", "debt", "leverage",
+                                 "margin", "revenue", "sales", "ffo", "affo", "noi", "fcf", "cash", "ebitdar"})
+
+
+def _relax_unstated_qualifiers(st: _Deck, index: ModelIndex, cands: list[_Cand]) -> set[int]:
+    """Decks drop "Adj." freely ("net leverage 3.1x" for "Net debt / Adj. EBITDA"). An unstated
+    adjusted / pro forma qualifier only argues against a cell when the model also holds a comparably
+    labelled cell without it; otherwise the qualified cell is the only version of the metric."""
+    relaxed: set[int] = set()
+    if not cands:
+        return relaxed
+    for c in cands:
+        extra = (index.quals[c.idx] & _RELAXABLE) - st.quals
+        if not extra or (index.quals[c.idx] & STRICT_QUALIFIERS) - st.quals - _RELAXABLE:
+            continue
+        if st.query is None or not (st.query.tokens & index.row_tokens(c.idx) & _ADJUSTABLE_METRICS):
+            continue   # the deck must name the metric that carries the qualifier ("net leverage" -> EBITDA)
+        rival = any(o is not c and o.base >= c.base - 0.15 and not (index.quals[o.idx] & extra) for o in cands)
+        if not rival:
+            c.score *= 0.92 / (0.5 ** len(extra))   # undo the strict penalty, keep a soft one
+            relaxed.add(c.idx)
+    return relaxed
 
 
 def _basis_of(period: str) -> str:
@@ -441,7 +626,8 @@ def _coherence(states: list[_Deck], index: ModelIndex) -> None:
         b = boosts.get(st.pos)
         if b:
             for c in st.cands:
-                c.score += b.get(c.idx, 0.0)
+                c.boost = b.get(c.idx, 0.0)
+                c.score += c.boost
             st.cands.sort(key=lambda c: (-c.score, c.idx))
 
 
@@ -449,6 +635,8 @@ def _groups(d: DeckNumber) -> list[tuple]:
     """Sibling groups whose members should land on one model row/column."""
     out: list[tuple] = []
     key = (d.slide_number, d.shape_id)
+    if d.label_cell:
+        return out
     if d.table_row >= 0:
         out.append((*key, "tr", d.table_row))
     if d.table_col >= 0:
@@ -556,6 +744,10 @@ def _label_decision(st: _Deck, index: ModelIndex, config: Config) -> _Label:
         # equal the deck value is coincidence, not verification.
         return _Label("ambiguous", None, None, best_score, margin, tied,
                       f"{len(valid)} equally labelled cells; only {vals[oks[0][0].idx].ref} matches", 0.0, "label")
+    if oks and d.comparator in (">", ">=", "<", "<=") and len(oks) < len(valid):
+        # "cushion above 35%" over a horizon must hold for every equally labelled period, not just one of them
+        return _Label("ambiguous", None, None, best_score, margin, tied,
+                      f"the bound holds for {len(oks)} of {len(valid)} equally labelled cells", 0.0, "label")
     if oks:
         c, cmp_ = min(oks, key=lambda t: (t[1].inferred, -t[0].score, abs(t[1].difference)))
         conf = min(_label_conf(c.score, 0.0, cmp_), 0.7 if len(oks) == len(valid) else 0.65)
@@ -611,12 +803,24 @@ def _near_match(st: _Deck, winner: _Cand, index: ModelIndex, config: Config):
     comps sheet's "EV" equals it.  Strict qualifier differences (adjusted, diluted, low/high ...) are
     never bridged: those are exactly the false passes the matcher exists to prevent.
     """
-    lo = winner.score - NEAR_BAND
+    # The window ignores sibling-coherence boosts, which only break ties between same-label cells.
+    lo = winner.score - winner.boost - NEAR_BAND
     for c in st.cands:
+        if (st.stats or index.stats(c.idx)) and st.stats != index.stats(c.idx):
+            continue   # median vs one peer, min vs max: different statistics
         if c.idx == winner.idx or c.score >= winner.score - BAND:
             continue
-        if c.score < lo:
-            break
+        if c.score - c.boost < lo:
+            continue
+        cmv = index.values[c.idx]
+        wmv = index.values[winner.idx]
+        if (cmv.hidden or (cmv.sheet_priority or 1.0) < 1.0) and not (wmv.hidden or (wmv.sheet_priority or 1.0) < 1.0):
+            continue   # agreeing only with a hidden / backup copy is the error, not its excuse
+        wctx, cctx = index.context_entities(winner.idx), index.context_entities(c.idx)
+        if wctx != cctx and (wctx & st.title_tokens or st.entities & index.label_tokens(winner.idx)):
+            continue   # the slide names the winner's segment; another segment's equal value is a copy error
+        if not _keeps_winner_tokens(st, winner, c.idx, index):
+            continue   # the winner shares "Talbot" with the slide; a cell without it is someone else's figure
         if qualifier_factor(st.quals, index.quals[c.idx]) < 0.9:
             continue
         mv = index.values[c.idx]
@@ -625,6 +829,154 @@ def _near_match(st: _Deck, winner: _Cand, index: ModelIndex, config: Config):
         x = compare(st.d, mv, config)
         if x is not None and x.ok:
             return c, x
+    return _context_match(st, winner, index, config) or _periodless_match(st, winner, index, config)
+
+
+def _periodless_match(st: _Deck, winner: _Cand, index: ModelIndex, config: Config):
+    """The figure states no period, the slide's period picked a cell that differs, and exactly one cell with
+    the very same label matches ("One-off integration costs of EUR240m" = "Total one-off integration
+    costs"). The slide's period was only a guess, so the label-identical cell is the source."""
+    if st.d.period or not st.soft:
+        return None
+    total_re = re.compile(r"^\s*total\b|\btotal\s*$", re.I)
+    if total_re.search(index.values[winner.idx].row_label or ""):
+        return None
+    found = []
+    for c in st.cands:
+        if (st.stats or index.stats(c.idx)) and st.stats != index.stats(c.idx):
+            continue   # median vs one peer, min vs max: different statistics
+        if c.idx == winner.idx or c.base < winner.base - 1e-9:
+            continue
+        if not total_re.search(index.values[c.idx].row_label or ""):
+            continue   # another year of the same line is a wrong-period figure, not the total
+        if not _keeps_winner_tokens(st, winner, c.idx, index):
+            continue
+        mv = index.values[c.idx]
+        if mv.is_error or qualifier_factor(st.quals, index.quals[c.idx]) < qualifier_factor(st.quals, index.quals[winner.idx]):
+            continue
+        x = compare(st.d, mv, config)
+        if x is not None and x.ok:
+            found.append((c, x))
+    if len({round(x.model_value, 9) for _c, x in found}) == 1:
+        return min(found, key=lambda t: (bool(index.values[t[0].idx].formula), -t[0].score))
+    return None
+
+
+_BASIS_RE = re.compile(
+    r"\b(?:including|incl\.?|excluding|excl\.?|ex\.?|net\s+of|before|after|pro\s+forma\s+for|adjusted\s+for)\s+"
+    r"(?:(?:the|full|fully|all|run[- ]rate|expected|one[- ]off|estimated|annual|total|\S+%|[$€£]?[\d.,]+\w*)\s+)*"
+    r"([a-z][a-z&/-]{3,})", re.I)
+_BASIS_GENERIC = {"that", "this", "these", "which", "closing", "close", "completion", "taxes", "tax"}
+# Adjustments that change a figure's basis; "including undrawn RCF" restates a definition and does not count.
+_ADJUSTMENT_WORD_RE = re.compile(
+    r"(?:synerg|ifrs|lease|sbc|stock|share-based|one-off|non-recurring|exceptional|restructuring|savings|"
+    r"cost-savings|fees|transaction|integration|minorit|nci|acquisition|divest|disposal|fx|currency|hedg|"
+    r"earn-?out|pension|impairment|amorti|ppa|contingent|dilution)", re.I)
+
+
+def _unshared_basis(st: _Deck, idx: int, index: ModelIndex) -> str:
+    """The sentence qualifies the figure ("including synergies", "excluding IFRS 16", "net of fees") with a word
+    none of the cell's labels use; returns that word ("" when there is none). Prose figures only."""
+    d = st.d
+    if d.table_row >= 0 or not d.context:
+        return ""
+    start = d.char_start if 0 <= d.char_start <= len(d.context) else 0
+    a = max(d.context.rfind(". ", 0, start), d.context.rfind("; ", 0, start), d.context.rfind("\n", 0, start)) + 1
+    ends = [i for i in (d.context.find(". ", start), d.context.find("; ", start), d.context.find("\n", start)) if i >= 0]
+    clause = d.context[a:min(ends) if ends else len(d.context)]
+    toks = index.label_tokens(idx)
+    for m in _BASIS_RE.finditer(clause):
+        word = m.group(1).lower()
+        if word in _BASIS_GENERIC or not _ADJUSTMENT_WORD_RE.match(word):
+            continue
+        wt = index.tokens_of(word)
+        if wt and not wt & toks:
+            return word
+    return ""
+
+
+def _keeps_winner_tokens(st: _Deck, winner: _Cand, idx: int, index: ModelIndex) -> bool:
+    """A fallback cell must carry every slide word the best-labelled cell's row shares with the slide
+    ("Talbot Aerostructures NTM revenue growth": a Segments growth cell without "Talbot" is not it)."""
+    if st.query is None:
+        return True
+    return (st.query.tokens & index.row_tokens(winner.idx)) <= index.label_tokens(idx)
+
+
+def _weak_label(st: _Deck, idx: int, index: ModelIndex) -> bool:
+    """True when the deck label and the cell's row label share too little to call a difference an error:
+    under half of the deck's (IDF-weighted) words appear on the cell, and under half of the cell's row
+    words appear on the deck ("new gross debt" vs "New Term Loan B")."""
+    q = st.query
+    if q is None or not q.total:
+        return False
+    toks = index.label_tokens(idx)
+    cov_d = sum(w for t, w in q.weights.items() if t in toks) / q.total
+    row = index.row_tokens(idx)
+    if not row:
+        return cov_d < WEAK_COVERAGE
+    cov_v = sum(w for t, w in q.weights.items() if t in row) / max(index.weight(row), 1e-9)
+    return cov_d < WEAK_COVERAGE and cov_v < WEAK_COVERAGE
+
+
+def _context_match(st: _Deck, winner: _Cand, index: ModelIndex, config: Config):
+    """The best-labelled cell disagrees, but the sentence itself names another candidate that agrees.
+
+    "Total leverage of 5.1x including run-rate cost savings" -> "Total leverage (PF Adj. EBITDA incl. cost
+    savings)" rather than "Total leverage (FY24A Adj. EBITDA)". Two or more distinctive words of the
+    sentence must appear in that cell's labels and not in the winner's; only prose figures qualify.
+    """
+    d = st.d
+    if st.query is None:
+        return None
+    if d.table_row >= 0:
+        # Table cell: the column header can name the metric on its own ("52-week high" x "Implied offer" is
+        # the offer price). Every column word must appear on the alternative cell, which the winner lacks.
+        ctx = index.tokens_of(d.col_label or "") - index.tokens_of(d.row_label or "")
+        need = len(ctx)
+    else:
+        ctx = index.tokens_of(d.context or "") - st.query.tokens
+        need = 2
+    if not ctx or need < 1:
+        return None
+    win_tokens = index.label_tokens(winner.idx)
+    found = []
+    for c in st.cands:
+        if (st.stats or index.stats(c.idx)) and st.stats != index.stats(c.idx):
+            continue   # median vs one peer, min vs max: different statistics
+        if c.idx == winner.idx:
+            continue
+        hits = (ctx & index.label_tokens(c.idx)) - win_tokens
+        if len(hits) < need or (d.table_row >= 0 and not ctx <= index.label_tokens(c.idx)):
+            continue
+        if not _keeps_winner_tokens(st, winner, c.idx, index):
+            continue
+        mv = index.values[c.idx]
+        if mv.is_error:
+            continue
+        x = compare(d, mv, config)
+        if x is not None and x.ok:
+            found.append((c, x))
+    if len(found) == 1:
+        return found[0]
+    if not found and d.table_row >= 0 and len(ctx) >= 2:
+        # The column header alone ("Implied offer") may name a cell the combined label never reached.
+        q2 = index.query(frozenset(ctx))
+        for i, base, kind in _scored_candidates(index, q2, max(config.min_label_score, 0.6)):
+            mv = index.values[i]
+            if i == winner.idx or mv.is_error or not ctx <= index.label_tokens(i):
+                continue
+            if index.row_tokens(i) - st.query.tokens - ctx:
+                continue   # the cell's row names something the slide does not ("Talbot" for a median row)
+            if not _keeps_winner_tokens(st, winner, i, index):
+                continue
+            if (st.stats or index.stats(i)) and st.stats != index.stats(i):
+                continue
+            x = compare(d, mv, config)
+            if x is not None and x.ok:
+                found.append((_Cand(i, base * 0.9, kind, base), x))
+        if found and len({round(x.model_value, 9) for _c, x in found}) == 1:
+            return max(found, key=lambda t: t[0].score)
     return None
 
 
@@ -708,6 +1060,20 @@ def _build_match(st: _Deck, lab: _Label, al: AlignResult | None, index: ModelInd
         cands = [vals[i] for i in lab.tied] if len(lab.tied) > 1 else top
         return _match(d, mv, lab.status, cands, lab.score, lab.conf, lab.method, lab.comparison, note)
 
+    if d.label_cell:
+        # "6.375% Senior notes": the row's other cells hold its amount, so a row-label figure is confirmed
+        # only by an equal labelled cell (or later by workbook text), never judged against the row's value.
+        if lab.status == "matched":
+            return from_label()
+        return _match(d, None, "unmatched", top, 0.0, 0.0, "", None,
+                      "figure inside a table row label; no equal workbook cell or text found")
+    if (al is not None and not al.ok and st.query is not None and st.cands and st.cands[0].score >= 0.6
+            and st.cands[0].idx != al.idx
+            and index.label_score(st.query, al.idx)[0] < max(config.min_label_score, 0.45)):
+        # A partial table alignment (the slide skips or reorders model rows) put this cell on a row whose
+        # label has nothing to do with the slide's ("Free cash flow" on "Cash interest"): the position is
+        # not evidence. Judge the cell by its own label instead.
+        al = None
     if al is not None:
         amv = vals[al.idx]
         label_ready = lab.status in ("matched", "mismatch")
@@ -727,7 +1093,9 @@ def _build_match(st: _Deck, lab: _Label, al: AlignResult | None, index: ModelInd
                 return from_label()
             return _match(d, amv, "matched", top, score_a, support_conf, al.method, al.comparison,
                           f"{al.block} aligns with {amv.sheet_name} ({al.support:.0%} of its numbers match)")
-        if strong:
+        if strong or lab.status == "matched":
+            # A labelled cell that equals the figure ("Pro forma ownership" at the end of a contribution
+            # series) outweighs the position the rest of the block aligned to.
             return from_label()
         if label_ready and lab.idx == al.idx:
             m = from_label()
@@ -746,6 +1114,23 @@ def _build_match(st: _Deck, lab: _Label, al: AlignResult | None, index: ModelInd
         mv = vals[lab.idx]
         return _match(d, None, "unmatched", [mv], lab.score, 0.0, "label", None,
                       f"range endpoint; nearest labelled cell {mv.sheet_name}!{mv.cell_address} is not the same range end")
+    if lab.status == "mismatch" and st.query is not None and lab.idx is not None and _weak_label(st, lab.idx, index):
+        # "new gross debt" vs "New Term Loan B": one shared word is not enough to say the figure is wrong.
+        return _match(d, None, "unmatched", top, lab.score, 0.0, "label", None,
+                      f"closest labelled cell {vals[lab.idx].ref} differs, but its label is only a weak match")
+    if lab.status == "mismatch" and lab.idx is not None and _unshared_basis(st, lab.idx, index):
+        # "Including full run-rate synergies, pro forma net leverage falls to 1.4x": the sentence states a basis
+        # (incl. synergies) the cell's labels do not, so the cell is not the same figure.
+        return _match(d, None, "unmatched", top, lab.score, 0.0, "label", None,
+                      f"the slide states a basis ({_unshared_basis(st, lab.idx, index)}) that "
+                      f"{vals[lab.idx].ref} does not")
+    if (lab.status == "mismatch" and not st.metric_tokens and st.query is not None and lab.idx is not None
+            and st.entities and st.query.tokens <= st.entities
+            and index.row_tokens(lab.idx) - st.query.tokens):
+        # "21,400 Brenner": the label names a company but no metric, so it cannot say which Brenner cell
+        # the figure claims to be. Unverified, not wrong.
+        return _match(d, None, "unmatched", top, lab.score, 0.0, "label", None,
+                      "the label names only a company or segment, not a metric")
     if lab.status in ("matched", "mismatch"):
         return from_label()
     if lab.status == "ambiguous" and (d.is_range or d.comparator in ("~", ">", ">=", "<", "<=")):

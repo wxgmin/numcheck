@@ -47,11 +47,18 @@ def merge_unit_hints(hints: list[UnitHint | None]) -> UnitHint:
     inherited from the slide is reported as "slide" while a header unit is "table".
     """
     out = UnitHint()
+    closed = False
     for h in hints:
         if h is None or h.is_empty():
             continue
+        if closed:
+            # A more specific hint already fixed a non-money unit with its own scale ("Visits (000s)",
+            # "Clinics", "Margin (%)"): the slide's "$ in millions" must not turn it into dollars.
+            continue
         if not out.source:
             out.source = h.source
+        if out.dimension == "none" and h.dimension in ("count", "percent", "multiple", "bps") and h.scale_known:
+            closed = True
         if out.dimension == "none" and h.dimension != "none":
             out.dimension = h.dimension
         if not out.scale and h.scale:

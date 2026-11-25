@@ -252,6 +252,8 @@ def align_blocks(
     series: dict[tuple, list[tuple[int, DeckNumber]]] = defaultdict(list)
     for pos in live:
         d = decks[pos]
+        if d.label_cell:
+            continue
         if d.table_row >= 0 and d.table_col >= 0:
             tables[(d.slide_number, d.shape_id)].append((pos, d))
         elif d.point_index >= 0 and d.series_index >= 0:

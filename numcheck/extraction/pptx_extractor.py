@@ -29,11 +29,13 @@ from pptx.shapes.group import GroupShape
 from numcheck.config import Config
 from numcheck.extraction import fileio
 from numcheck.extraction.chart_extractor import PER_SHARE_RE, extract_chart_numbers, merge_unit_hints
+from numcheck.extraction.xlsx_structure import _is_block_title
 from numcheck.matching.normalizer import (
     ParsedNumber,
     UnitHint,
     explicit_currency_unit,
     is_fx_rate_label,
+    is_unit_price_label,
     parse_unit_banner,
     scan_numbers,
 )
@@ -192,6 +194,7 @@ def _choose_period(text: str, c_start: int, c_end: int, n: ParsedNumber) -> tupl
         a, b = min(spans, key=lambda ab: _dist(ab[0][0], ab[1][1], n.start, n.end))
         return (a[2] if n.range_role == "low" else b[2]), False
     best, best_d = "", 10 ** 9
+    has_before = any(s < n.start for s, _e, _k in singles)
     for s, e, key in singles:
         d = _dist(s, e, n.start, n.end)
         if s >= n.end and re.fullmatch(r"\s*(?:[a-z%]+\s+){0,2}(?:in|for|during|at|over)\s+(?:the\s+)?",
@@ -202,6 +205,8 @@ def _choose_period(text: str, c_start: int, c_end: int, n: ParsedNumber) -> tupl
         elif s >= n.end and re.search(r"\b(?:before|after|until|till|prior\s+to|beyond|post|through|since)\s+$",
                                       text[max(n.end, s - 12):s], re.I):
             continue    # "$742m with no maturities before 2029": a bound on something else, not this figure's date
+        elif s >= n.end and has_before and re.search(r"\d", re.sub(r"\([^)]*\)", "", text[n.end:s])):
+            continue    # "28.6%, rising to 28.7% in 2026E": a later figure sits between, the period is its own
         if d < best_d:
             best, best_d = key, d
     if not best and spans:
@@ -775,6 +780,12 @@ def _banner_hint(text: str) -> UnitHint | None:
     return h if (h.scale_known or h.currency) else None
 
 
+_SCOPED_BANNER_RE = re.compile(
+    r"^\(?\s*(?!(?:all\s+)?(?:amounts?|figures?|values?|numbers?|data|financials?|currency|dollars?|euros?|pounds?|"
+    r"usd|eur|gbp|chf|jpy|us\$|\$|€|£)\b)[A-Za-z][A-Za-z&/\- ]{2,40}?\s+(?:in|are\s+in|shown\s+in)\s+"
+    r"(?:thousands|millions|billions|000s|'000s?|units)\b[^)]*\)?\s*$", re.I)
+
+
 def _choose_slide_hint(ctx: _SlideCtx, items: list[_TextItem], title_item: _TextItem | None) -> None:
     ordered: list[_TextItem] = []
     if title_item is not None:
@@ -785,6 +796,8 @@ def _choose_slide_hint(ctx: _SlideCtx, items: list[_TextItem], title_item: _Text
     for it in ordered:
         if it.kind == "footnote" or len(it.text) > 140 or _has_checkable_numbers(it.text):
             continue
+        if _SCOPED_BANNER_RE.match(it.text.strip()):
+            continue   # "(Members in thousands)": the unit of one metric, not of every figure on the slide
         h = _banner_hint(it.text)
         if h is not None:
             ctx.hint = replace(h, source="slide")
@@ -828,6 +841,16 @@ _CELL_UNIT_WORDS = {"million", "millions", "billion", "billions", "thousand", "t
                     "eur", "gbp", "ltm", "ntm", "per", "share", "est", "act", "approx"}
 
 
+def _real_words(text: str) -> list[str]:
+    return [w for w in re.findall(r"[A-Za-z]{3,}", _DATE_TEXT_RE.sub(" ", text))
+            if w.lower() not in _CELL_UNIT_WORDS and not re.fullmatch(_MONTH_PAT, w, re.I)]
+
+
+def _is_named_figure(text: str) -> bool:
+    """"Revolving credit facility ($250m)", "6.375% Senior notes": a name that carries a figure."""
+    return len(_real_words(text)) >= 2 and any(not n.skip_reason for n in scan_numbers(text))
+
+
 def _classify_text(text: str) -> str:
     t = text.strip()
     if not t:
@@ -836,10 +859,8 @@ def _classify_text(text: str) -> str:
         return "na"
     parsed = scan_numbers(t)
     if any(not n.skip_reason for n in parsed):
-        # "Revolving credit facility ($250m)", "6.375% Senior notes": a name that carries a figure is a label
-        words = [w for w in re.findall(r"[A-Za-z]{3,}", _DATE_TEXT_RE.sub(" ", t))
-                 if w.lower() not in _CELL_UNIT_WORDS and not re.fullmatch(_MONTH_PAT, w, re.I)]
-        return "text" if len(words) >= 2 else "num"
+        # A name that carries a figure is a label, not a value cell
+        return "text" if len(_real_words(t)) >= 2 else "num"
     if find_periods(t) or any(n.skip_reason in ("year", "period", "date") for n in parsed):
         return "period"
     return "text"
@@ -1092,13 +1113,78 @@ def _extract_table(ctx: _SlideCtx, shape, items: list[_TextItem], title_item) ->
         for c in range(nc):
             record_skipped(r, c, "table_header")
 
+    def label_figures(r: int, c: int, row_label: str) -> None:
+        """A figure written into a row label ("Revolving credit facility ($250m)", "6.375% Senior notes") is a
+        claim about the instrument: check it like prose when it carries an explicit unit, outside the grid."""
+        if not grid.origin[r][c] or c == axis_col or not _is_named_figure(grid.texts[r][c]):
+            record_skipped(r, c, "table_label")    # axis values and bare numbers label the grid
+            return
+        cell = table.cell(r, c)
+        for pi, para in enumerate(cell.text_frame.paragraphs):
+            text = para.text.replace("\x0b", "\n")
+            nums, skipped = scan_paragraph(
+                ctx, text, ctx.hint, source=Source.TABLE, shape_id=shape_id, para_idx=pi,
+                uid_prefix=f"s{ctx.number}-{shape_id}-r{r}c{c}-p{pi}")
+            for dn in nums:
+                dn.table_row, dn.table_col = r, c
+                dn.label_cell = True
+                dn.row_label = row_label
+                dn.context = cell.text.strip()
+                if dn.raw_text.startswith("(") and dn.raw_text.endswith(")"):
+                    dn.value = abs(dn.value)            # "($250m)" in a name is an aside, not a negative
+                if dn.unit_source != "token" or dn.unit == "none":
+                    dn.skip_reason = "table_label"      # "Tier 1", "Phase 2", "Fund III": names, not figures
+                    skipped.append(dn)
+            for sk in skipped:
+                sk.table_row, sk.table_col = r, c
+            ctx.numbers.extend(dn for dn in nums if not dn.skip_reason)
+            ctx.skipped.extend(skipped)
+
+    # --- dependent rows ("  % margin" under "Adj. EBITDA") inherit their parent row's label ----------------
+    parents: dict[int, str] = {}
+    parent = ""
+    for r in body:
+        own = " ".join(_dedupe_join([grid.texts[r][c] for c in label_cols])).strip()
+        if not own:
+            parent = "" if all(k in ("empty",) for k in kinds[r]) else parent
+            continue
+        raw_first = next((grid.texts[r][c] for c in label_cols if grid.texts[r][c].strip()), "")
+        if _is_dependent_row(own, raw_first):
+            if parent:
+                parents[r] = parent
+        else:
+            parent = own
+
+    # --- stacked blocks: a body row repeating the period header ("Castellane | 2024A | 2025E ...") starts a
+    # new company / segment block; rows below it (and the first block, under the top-left header) carry its name.
+    blocks: dict[int, str] = {}
+    repeat_rows = [r for r in body if label_cols and grid.texts[r][label_cols[0]].strip()
+                   and sum(kinds_full[r][c] == "period" for c in range(nc) if c not in label_cols) >= 2
+                   and all(kinds_full[r][c] in ("period", "empty") for c in range(nc) if c not in label_cols)]
+    top_left = " ".join(_dedupe_join([grid.texts[r0][c] for r0 in range(n_hdr) for c in label_cols])).strip()
+    if not repeat_rows and _is_block_title(top_left) and not transposed:
+        blocks = {r: top_left for r in body}   # "Brenner | 2024A | 2025E": the table is about Brenner
+    if repeat_rows:
+        current = top_left
+        for r in body:
+            if r in repeat_rows:
+                current = grid.texts[r][label_cols[0]].strip()
+                continue
+            if current:
+                blocks[r] = current
+
     # --- body ---------------------------------------------------------------------
     for r in body:
         row_parts = _dedupe_join([grid.texts[r][c] for c in label_cols])
+        if r in parents:
+            row_parts = [parents[r], *row_parts]
+
         row_label = " ".join(row_parts)
         # A number inside the row label ("5.250% Senior Secured Notes", "7.0x leverage covenant") describes
         # the instrument, not the unit of the values in the row: strip it before reading unit hints.
-        hint_text = re.sub(r"[$€£]?\d+(?:[.,]\d+)?\s*(?:%|x|bps)?", " ", row_label) if row_label else ""
+        # "(000s)" / "('000)" is a unit statement, not a figure: keep it.
+        hint_text = re.sub(r"(?<!\()(?<!\(')[$€£]?\d+(?:[.,]\d+)?\s*(?:%|x|bps)?(?!0*s?'?\s*\))", " ", row_label) \
+            if row_label else ""
         row_hint = parse_unit_banner(hint_text) if hint_text.strip() else UnitHint()
         row_hints = [replace(row_hint, source="table")] if not row_hint.is_empty() else []
         if units_col >= 0:
@@ -1107,7 +1193,7 @@ def _extract_table(ctx: _SlideCtx, shape, items: list[_TextItem], title_item) ->
                 row_hints.insert(0, replace(uh, source="table"))
         for c in range(nc):
             if c in label_cols:
-                record_skipped(r, c, "table_label")
+                label_figures(r, c, row_label)
                 continue
             if c == units_col or not grid.origin[r][c] or kinds[r][c] in ("empty", "na", "text", "period"):
                 if kinds[r][c] in ("text", "period") and c not in label_cols:
@@ -1133,6 +1219,11 @@ def _extract_table(ctx: _SlideCtx, shape, items: list[_TextItem], title_item) ->
                 cell_hint = merge_unit_hints(row_hints + [ch, table_hint, ctx.hint])
             if cell_hint.per_share_exception and PER_SHARE_RE.search(f"{row_label} {col_label}"):
                 cell_hint = replace(cell_hint, scale="", scale_known=True)
+            elif (cell_hint.dimension == "currency" and is_unit_price_label(row_label)
+                  and not parse_unit_banner(row_label).scale):   # "Revenue / location ($m)" states its scale
+                # "Revenue / visit ($)", "52-week high", "Offer price per share": a price in raw units, even on a
+                # "$ in millions" slide
+                cell_hint = replace(cell_hint, scale="", scale_known=True)
             if is_fx_rate_label(row_label):
                 cell_hint = UnitHint(dimension="none", scale="", scale_known=True)
             if transposed:
@@ -1156,6 +1247,7 @@ def _extract_table(ctx: _SlideCtx, shape, items: list[_TextItem], title_item) ->
                 for dn in nums:
                     dn.label = label or dn.label
                     dn.row_label, dn.col_label = row_label, col_label
+                    dn.block = blocks.get(r, "")
                     dn.table_row, dn.table_col = r, c
                     dn.context = cell.text.strip()
                     if not dn.period:
@@ -1166,6 +1258,16 @@ def _extract_table(ctx: _SlideCtx, shape, items: list[_TextItem], title_item) ->
                 ctx.numbers.extend(nums)
                 ctx.skipped.extend(skipped)
             row_parts, row_label = _saved
+
+
+_DEPENDENT_RE = re.compile(
+    r"^\s*(?:\(?%\)?\s*(?:of\b|margin\b|growth\b|change\b|chg\b)|as\s+an?\s+%|as\s+%|"
+    r"(?:y/?o?/?y|yoy|annual|organic)?\s*(?:growth|margin|change|chg\.?)\s*(?:\(%\)|%)?\s*$)", re.I)
+
+
+def _is_dependent_row(label: str, raw: str) -> bool:
+    """"% margin", "  % growth", "% of total", "Margin (%)", "y/y growth": a row about the row above it."""
+    return bool(label) and bool(_DEPENDENT_RE.match(label))
 
 
 def _wordy_column(grid, body, c, kinds) -> bool:

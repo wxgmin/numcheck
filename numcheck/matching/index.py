@@ -47,7 +47,7 @@ _STAT_GROUPS = {
     "max": "max", "maximum": "max", "high": "max", "highest": "max",
 }
 _STAT_RE = re.compile(r"\b(" + "|".join(_STAT_GROUPS) + r")\b", re.I)
-_CHANGE_RE = re.compile(r"change|chg|Δ|delta|\bq/?o/?q\b|\by/?o/?y\b|growth|expansion|increase|improvement|"
+_CHANGE_RE = re.compile(r"change|chg|cagr|\bnet\s+(?:new|adds?|additions?|openings?)\b|Δ|delta|\bq/?o/?q\b|\by/?o/?y\b|growth|expansion|increase|improvement|"
                         r"vs\.?\s+prior", re.I)
 
 
@@ -172,7 +172,10 @@ class ModelIndex:
                        covenant_words(f"{named} {row}"))
                 stat_cache[skey] = sc_
             self._stats[i], self._change[i], self._cov[i] = sc_
-            self.periods[i] = mv.period or pc.period or pn.period or pr.period or ps.period
+            row_period = pr.period
+            if row_period and "mo" in row_period and pr.tokens:
+                row_period = ""   # "Norvik Logistics Mar-2019": an entry / maturity date attribute, not the period
+            self.periods[i] = mv.period or pc.period or pn.period or row_period or ps.period
             qkey = (named, row, col, sec, tuple(mv.qualifiers))
             q = qual_cache.get(qkey)
             if q is None:
@@ -304,6 +307,10 @@ class ModelIndex:
     def is_change(self, i: int) -> bool:
         """True when the cell's labels say it expresses a change (change, delta, QoQ, YoY, growth ...)."""
         return self._change[i]
+
+    def label_tokens(self, i: int) -> frozenset[str]:
+        """Every label token of cell *i*: row, named range, column header and section."""
+        return self._row_tok[i] | self._named_tok[i] | self._col_tok[i] | self._sec_tok[i]
 
     def row_tokens(self, i: int) -> frozenset[str]:
         return self._row_tok[i] | self._named_tok[i]

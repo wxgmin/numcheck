@@ -338,6 +338,23 @@ class _RowStat:
     has_value: bool = False
 
 
+_GENERIC_HEADER_RE = re.compile(
+    r"^\s*(?:\(.*\)|fiscal\s+years?(?:\s+end(?:ing|ed)?.*)?|fye?\b.*|years?\s+end(?:ing|ed)?.*|period|year|quarter|month|"
+    r"as\s+(?:of|at)\b.*|metric|metrics|item|items|line\s+item|description|particulars|kpis?|key\s+metrics|"
+    r"\$.*|€.*|£.*|(?:usd|eur|gbp)\b.*|units?|in\s+millions.*|millions|thousands|segment|segments|company|companies|"
+    r"service\s+line|business\s+line|division|region|facility|tranche|instrument|source|sources|uses|scenario|case|"
+    r"income\s+statement|balance\s+sheet|cash\s+flow.*|summary.*|financials?|historical.*|projections?|forecast|"
+    r"operating\s+(?:model|data|metrics)|assumptions?|actuals?|estimates?)\s*:?\s*$", re.I)
+
+
+def _is_block_title(text: str) -> bool:
+    """A proper name heading a period header row ("Brenner Industrietechnik AG"), not a column title."""
+    t = (text or "").strip()
+    if not t or len(t) > 60 or _GENERIC_HEADER_RE.match(t) or re.search(r"\d", t):
+        return False
+    return bool(re.search(r"\b[A-Z][a-z]{2,}", t))
+
+
 @dataclass
 class _Group:
     start: int
@@ -350,6 +367,7 @@ class _Group:
     banner: UnitHint | None
     period_row: int
     col_unit: dict[int, UnitHint] = field(default_factory=dict)   # from a units row under the header
+    block_title: str = ""       # "Brenner Industrietechnik AG | 2023A | 2024A": the block's company / segment
 
 
 def analyze_sheet(g: SheetGrid) -> SheetLayout:
@@ -632,6 +650,7 @@ def _build_group(rows, stats, start, core_start, core_end, end, hdr_cols, units_
     parts: dict[int, list[str]] = {c: [] for c in cols}
     group_label: dict[int, str] = {}
     forced_unit: set[int] = set()
+    block_title = ""
     banner: UnitHint | None = None
     for r in range(start, end + 1):
         if r not in rows or r in units_rows:
@@ -664,6 +683,8 @@ def _build_group(rows, stats, start, core_start, core_end, end, hdr_cols, units_
                 banner = h
             if p.lower() in _UNIT_HEADERS:
                 forced_unit.add(c)
+            elif h is None and not block_title and _is_block_title(p):
+                block_title = p.strip()
     hdr_label: dict[int, str] = {}
     for c in cols:
         dedup: list[str] = []
@@ -677,7 +698,7 @@ def _build_group(rows, stats, start, core_start, core_end, end, hdr_cols, units_
             period_row = rr
             break
     return _Group(start, core_start, core_end, end, hdr_label, group_label, forced_unit, banner, period_row,
-                  col_unit)
+                  col_unit, block_title)
 
 
 # --------------------------------------------------------------------------- #
@@ -742,14 +763,35 @@ def _walk_region(g, rows, stats, grp, region_rows, state: _WalkState, sheet_bann
     tail_banner = state.banner
     state.broken = False
     state.last_row = grp.end if grp is not None else 0
-    for r in region_rows:
-        try:
-            tail_banner = _walk_row(g, rows[r], r, kinds, hdr_label, group_label, grp, state, sheet_banner,
-                                    layout, label_cols, tail_banner, stats.get(r))
-        except Exception:  # noqa: BLE001 - one malformed row never aborts the sheet
-            layout.failed_rows += 1
-        state.last_row = r
+    saved_top = state.top_section
+    if grp is not None and grp.block_title:
+        state.top_section = _compose(saved_top, [grp.block_title])
+    try:
+        for r in region_rows:
+            try:
+                tail_banner = _walk_row(g, rows[r], r, kinds, hdr_label, group_label, grp, state, sheet_banner,
+                                        layout, label_cols, tail_banner, stats.get(r))
+            except Exception:  # noqa: BLE001 - one malformed row never aborts the sheet
+                layout.failed_rows += 1
+            state.last_row = r
+    finally:
+        if grp is not None and grp.block_title and state.top_section == _compose(saved_top, [grp.block_title]):
+            state.top_section = saved_top
     return tail_banner
+
+
+_ATTR_HDR_RE = re.compile(
+    r"\b(?:pricing|price\s+terms|coupon|spread|margin\s+over|benchmark|rating|ratings|maturity|tenor|term|type|"
+    r"security|seniority|ranking|status|currency|ccy|comments?|notes?|description|structure|instrument|"
+    r"call\s+protection|amorti[sz]ation\s+profile|fixed\s*/\s*floating|index)\b", re.I)
+
+
+def _is_attribute_cell(header: str, text: str) -> bool:
+    """Text in a column of a table whose header names an attribute ("Pricing: SOFR + 350", "Rating: B2",
+    "Maturity: 2032") or that carries a figure ("L+275") describes the row; it does not start a new block."""
+    if not header:
+        return False
+    return bool(_ATTR_HDR_RE.search(header)) or bool(re.search(r"\d", text or ""))
 
 
 def _walk_row(g, entries, r, kinds, hdr_label, group_label, grp, state: _WalkState, sheet_banner,
@@ -806,6 +848,8 @@ def _walk_row(g, entries, r, kinds, hdr_label, group_label, grp, state: _WalkSta
                 continue
             if pending and not last_num and _ATTR_DATE_HDR_RE.search(hdr_label.get(c, "") or ""):
                 continue   # "Entry date: Mar-2019" describes the row; it is not its period
+            if last_num and _is_attribute_cell(hdr_label.get(c, "") or state.last_text_in_col.get(c, ""), payload):
+                continue   # "SOFR + 350" under "Pricing": an attribute of the row, not a new block's label
             if last_num:
                 pending, pend_indent, pend_unit, last_num = [], -1, None, False
             if not pending:
@@ -817,6 +861,8 @@ def _walk_row(g, entries, r, kinds, hdr_label, group_label, grp, state: _WalkSta
                 continue
             if pending and _ATTR_DATE_HDR_RE.search(hdr_label.get(c, "") or ""):
                 continue   # "Entry date: Mar-2019" describes the row; it is not its period
+            if last_num and _ATTR_HDR_RE.search(hdr_label.get(c, "") or state.last_text_in_col.get(c, "") or ""):
+                continue   # a maturity year / rating under its own header describes the row
             if last_num:
                 pending, pend_indent, pend_unit, last_num = [], -1, None, False
             txt = _num_text(kind, payload, g.fmts.get((r, c)))

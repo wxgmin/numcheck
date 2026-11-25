@@ -73,7 +73,7 @@ _E = r"(?![A-Za-z0-9])"                # right boundary
 
 _PATTERNS: list[tuple[re.Pattern, str]] = [
     # LTM / NTM with optional anchor: "LTM Sep-24", "LTM 30-Sep-2024", "NTM"
-    (re.compile(_B + r"(ltm|ttm|ntm)(?:\s*(?:\d{1,2}[-\s])?([a-z]{3,4})[-\s'’]?(\d{2,4}))?" + _E, re.I), "lxm"),
+    (re.compile(_B + r"(ltm|ttm|ntm)(?:\s*(?:\d{1,2}[-\s])?([a-z]{3,4})[-\s'’]?(\d{2,4})[aepbf]?)?" + _E, re.I), "lxm"),
     # Quarter with FY: "Q3 FY24", "3QFY24", "Q3FY2024"
     (re.compile(_B + r"(?:q([1-4])|([1-4])q)\s*'?fy\s*" + _Y + _ST + _E, re.I), "qfy"),
     # FY with quarter after: "FY24 Q3"
@@ -89,7 +89,12 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
     # Month + year: "Jan-24", "Sep 2024", "Sept. '24" (monthly model columns)
     # A full date ("30-Sep-2024", "30 September 2024") is a point in time, not a monthly period.
     (re.compile(r"(?<!\d[-\s/.])(?<!\d)" + _B + r"(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?[\s\-/]*"
-                + _Y + _E + r"(?!,?\s*(?:19|20)\d{2})", re.I), "mon"),   # "January 31, 2025" is a date
+                + _Y + _ST + _E + r"(?!,?\s*(?:19|20)\d{2})", re.I), "mon"),   # "January 31, 2025" is a date
+    # As-of dates: "March 31, 2025", "31 March 2025", "Dec. 31, 2024" -> the month the date falls in
+    (re.compile(_B + r"(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+"
+                r"((?:19|20)\d{2})" + _E, re.I), "datemo"),
+    (re.compile(_B + r"\d{1,2}(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\.?,?\s+"
+                r"((?:19|20)\d{2})" + _E, re.I), "datemo"),
     # YTD months: "9M24", "6M 2024", "9M'24"
     (re.compile(_B + r"([369])m\s*" + _Y + _ST + _E, re.I), "my"),
     # Bare 4-digit year with optional status: "2024", "2024A", "2025E"
@@ -137,6 +142,18 @@ def _from_match(kind: str, m: re.Match) -> Period | None:
     if kind == "mon":
         mon = _MONTHS.get(g[0].lower()[:4]) or _MONTHS.get(g[0].lower()[:3])
         y = _yy_to_year(g[1])
+        text = m.group(0)
+        if (re.match(r"(?i)(?:january|february|march|april|june|july|august|september|october|november|december)\s+\d{1,2}$",
+                     text) and int(g[1]) <= 31):
+            return None   # "fiscal year ending June 30": a day of the month, not June 2030
+        if y and mon and g[2]:
+            # "Dec-22A", "Jun-25E": an actual / estimate column named by its period end is a fiscal year
+            # ending that month (FYE Dec-22 = FY22), not a monthly figure.
+            return Period("fy", y, "", g[2].lower())
+        return Period("y", y, f"mo{mon:02d}") if (y and mon) else None
+    if kind == "datemo":
+        mon = _MONTHS.get(g[0].lower()[:4]) or _MONTHS.get(g[0].lower()[:3])
+        y = _yy_to_year(g[1])
         return Period("y", y, f"mo{mon:02d}") if (y and mon) else None
     if kind == "my":
         y = _yy_to_year(g[1])
@@ -150,6 +167,9 @@ def _from_match(kind: str, m: re.Match) -> Period | None:
     if kind == "q":
         return Period("q", None, f"q{g[0]}")
     return None
+
+
+_SPAN_END_RE = re.compile(r"\s*[-–—]\s*'?(\d{2})([AaEePpFfBb])?\b")
 
 
 def find_periods(text: str) -> list[tuple[Period, int, int]]:
@@ -168,6 +188,18 @@ def find_periods(text: str) -> list[tuple[Period, int, int]]:
                 continue
             taken.append((s, e))
             out.append((p, s, e))
+    # "FY22A-24A", "FY22–24E", "CY23-25": the span's end inherits the start's basis
+    for p, s, e in list(out):
+        if p.basis not in ("fy", "cy") or p.part or p.year is None:
+            continue
+        m = _SPAN_END_RE.match(text, e)
+        if not m or any(m.start(1) < te and m.end() > ts for ts, te in taken):
+            continue
+        y = _yy_to_year(m.group(1))
+        # "FY2024-25" names one fiscal year (UK / India style); a span skips years or marks its end "24A"
+        if y and (y > p.year + 1 or (y == p.year + 1 and m.group(2))):
+            taken.append((m.start(1), m.end()))
+            out.append((Period(p.basis, y, "", (m.group(2) or "").lower()), m.start(1), m.end()))
     out.sort(key=lambda t: t[1])
     return out
 
@@ -276,6 +308,17 @@ def period_affinity(a: str, b: str) -> float | None:
         if (pa.basis == "ltm" or pb.basis == "ltm") and other.part.startswith("q") and other.year:
             return 0.5
         return 0.0
+    if pa.year is not None and pa.year == pb.year and pa.part != pb.part:
+        ma = pa.part if pa.part.startswith("mo") else ""
+        mb = pb.part if pb.part.startswith("mo") else ""
+        if ma or mb:
+            other = pb if ma else pa
+            month = int((ma or mb)[2:])
+            if not other.part:
+                return 0.5      # "as of March 31, 2025" vs a FY25 / "Mar-25A" year-end column
+            if other.part.startswith("q") and other.basis in ("y", "cy") and month == 3 * int(other.part[1]):
+                return 0.5      # Mar-25 ends calendar Q1 2025 (a balance date, or one month of a flow)
+            # a fiscal quarter (FYE unknown) is matched only when its header names the month (see pipeline)
     if pa.year != pb.year or pa.part != pb.part:
         return 0.0
     if "y" in (pa.basis, pb.basis):

@@ -115,6 +115,8 @@ def verify_derived(matches: list[Match], model_values: list[ModelValue], config,
     targets = [m for m in targets if (not m.deck.is_range or m.deck.unit == "multiple") and m.deck.comparator == "="
                and ("guidance" not in (m.deck.qualifiers or [])
                     or re.fullmatch(r"(?:fy|cy|y)\d{2}", m.deck.period or ""))]
+    # "(SOFR 4.30% + 350bps)", "E + 275": a spread over a benchmark, not a change of anything.
+    targets = [m for m in targets if not _is_spread(m.deck)]
     if not targets or not model_values:
         return 0
     lookup = _Lookup(model_values, config)
@@ -487,6 +489,163 @@ def verify_pie_shares(matches: list[Match], model_values: list[ModelValue], conf
             if m.status in ("unmatched", "ambiguous") and _apply(
                     m, v / total * 100.0, mv, f"{mv.ref} / sum of the chart's slices", config,
                     other=cells[0][0], confirm_only=True):
+                changed += 1
+    return changed
+
+
+_SHARE_COL_RE = re.compile(r"%\s*(?:of\b|total)|\bshare\b|\bmix\b|\bweight(?:ing)?\b|\bcontribution\b", re.I)
+_TOTAL_ROW_RE = re.compile(r"^\s*(?:total|sum|group\s+total|combined)\b", re.I)
+
+
+def verify_table_shares(matches: list[Match], config) -> int:
+    """A "% of total" / "% of debt" / "mix" column of a slide table is its row's amount over the total.
+
+    The amounts are the verified model cells of the same table (the amount column is the one whose cells
+    in those rows are verified, nearest the share column); the base is the verified Total row or, when the
+    total is missing or itself wrong, the sum of the verified component rows. The Total row's share is
+    100%. Results replace label guesses for unresolved or mismatched share cells, so a wrong share is
+    reported against the share the model's own amounts imply.
+    """
+    from collections import Counter
+
+    tables: dict[tuple, dict[tuple[int, int], Match]] = {}
+    for m in matches:
+        d = m.deck
+        if d.table_row >= 0 and d.table_col >= 0 and not getattr(d, "label_cell", False) and not d.skip_reason:
+            tables.setdefault((d.slide_number, d.shape_id), {})[(d.table_row, d.table_col)] = m
+    changed = 0
+    for cells in tables.values():
+        share_cols = {c for (_r, c), m in cells.items()
+                      if m.deck.unit == "percent" and _SHARE_COL_RE.search(m.deck.col_label or "")}
+        for sc in share_cols:
+            rows = sorted(r for (r, c) in cells if c == sc)
+            counts: Counter = Counter()
+            for (r, c), m in cells.items():
+                if c != sc and r in rows and m.deck.unit != "percent" and m.model is not None and m.status == "matched":
+                    counts[c] += 1
+            if not counts:
+                continue
+            ac = max(counts, key=lambda c: (counts[c], -abs(sc - c), c))
+            amounts: dict[int, tuple[ModelValue, float]] = {}
+            for r in rows:
+                m = cells.get((r, ac))
+                if m is not None and m.model is not None and m.status == "matched" and not m.model.is_error:
+                    amounts[r] = (m.model, canonical_model(m.model, config.unit_scales)[1])
+            if any(v < 0 for _mv, v in amounts.values()):
+                continue
+            totals = [r for r in rows if _TOTAL_ROW_RE.match(cells[(r, sc)].deck.row_label or "")]
+            parts = [r for r in rows if r not in totals]
+            base_mv, base = None, None
+            if totals and totals[-1] in amounts:
+                base_mv, base = amounts[totals[-1]]
+                how_base = base_mv.ref
+            elif parts and all(r in amounts for r in parts):
+                base = sum(amounts[r][1] for r in parts)
+                base_mv = amounts[parts[0]][0]
+                how_base = "the sum of the table's rows"
+            if not base or base <= 0:
+                continue
+            for r in rows:
+                m = cells[(r, sc)]
+                if m.status == "matched" and m.method != "value_only":
+                    continue
+                if r in totals:
+                    expected, src, how = 100.0, base_mv, f"total row share of {how_base}"
+                elif r in amounts:
+                    src, v = amounts[r]
+                    expected, how = v / base * 100.0, f"{src.ref} / {how_base}"
+                else:
+                    continue
+                if _apply(m, expected, src, how, config, other=base_mv):
+                    changed += 1
+    return changed
+
+
+_FROM_TO_RE = re.compile(r"^\s*(?:,\s*)?(?:from|vs\.?|versus)\s+(\S+?)\s+to\s+(\S+?)(?=[\s,;)]|\.(?:\s|$)|$)", re.I)
+
+
+_SPREAD_CTX_RE = re.compile(r"\b(?:sofr|tsofr|libor|euribor|sonia|estr|saron|bbsy|cdor|base\s+rate|prime|"
+                            r"benchmark|treasur(?:y|ies)|ust|gilts?|swaps?)\b(?:\s*[\d.,]+\s*%?)?\s*$", re.I)
+
+
+def _is_spread(d) -> bool:
+    if d.unit != "bps" or not (d.raw_text or "").lstrip().startswith("+") or not d.context:
+        return False
+    before = d.context[:d.char_start] if 0 < d.char_start <= len(d.context) else ""
+    return bool(_SPREAD_CTX_RE.search(before))
+
+
+def _resolve_endpoint(o: Match, config, rows: dict | None = None) -> None:
+    """"from 20.5% to 23.2%": each endpoint is a level of the labelled series, not one end of a range. Confirm
+    it against the one labelled cell that equals it - a candidate or another year of a candidate's row (several
+    equal cells: leave it open)."""
+    from numcheck.matching.normalizer import compare
+
+    pool = list(o.candidates or [])
+    for c in list(pool):
+        pool += [v for v in (rows or {}).get((c.workbook, c.sheet_name, c.row), []) if v is not c]
+    hits = []
+    for c in pool:
+        if c.is_error:
+            continue
+        x = compare(o.deck, c, config)
+        if x is not None and x.ok:
+            hits.append((c, x))
+    if len({round(x.model_value, 9) for _c, x in hits}) != 1 or len({(c.sheet_name, c.row) for c, _x in hits}) != 1:
+        return
+    c, x = hits[0]
+    o.model, o.comparison, o.status, o.method = c, x, "matched", "label"
+    o.confidence = max(o.confidence, 0.7)
+    o.note = "start/end level of a stated change; equals the labelled cell"
+
+
+def verify_from_to(matches: list[Match], config, model_values: list[ModelValue] | None = None) -> int:
+    """"Margin expands 266bps from 20.5% to 23.2%": the change between two figures of the same sentence
+    that are themselves verified. bps / pp changes of percentages are the difference in points; a % change of
+    amounts is end / start - 1. The stated endpoints define the change, so this replaces a year-on-year cell
+    the label happened to find."""
+    rows: dict[tuple, list[ModelValue]] = {}
+    for v in model_values or []:
+        rows.setdefault((v.workbook, v.sheet_name, v.row), []).append(v)
+    by_para: dict[tuple, list[Match]] = {}
+    for m in matches:
+        d = m.deck
+        if d.paragraph_index >= 0 and d.table_row < 0:
+            by_para.setdefault((d.slide_number, d.shape_id, d.paragraph_index), []).append(m)
+    changed = 0
+    for members in by_para.values():
+        for m in members:
+            d = m.deck
+            if d.char_end < 0 or not d.context or d.unit not in ("bps", "percent"):
+                continue
+            mt = _FROM_TO_RE.match(d.context[d.char_end:])
+            if not mt:
+                continue
+            ends = []
+            for tok in mt.groups():
+                tok = tok.strip(",.;")
+                o = next((o for o in members if o is not m and o.deck.raw_text == tok), None)
+                if o is not None and o.status != "matched":
+                    _resolve_endpoint(o, config, rows)
+                ends.append(o if o is not None and o.status == "matched" and o.model is not None
+                            and not o.model.is_error else None)
+            if None in ends:
+                continue
+            a, b = (canonical_model(e.model, config.unit_scales)[1] for e in ends)
+            ua, ub = ends[0].deck.unit, ends[1].deck.unit
+            if ua == ub == "percent":
+                if d.unit == "percent" and "%" in d.raw_text and not re.search(r"\bpp\b|points?", d.context, re.I):
+                    continue   # "up 13% from 20.5% to 23.2%" is ambiguous (relative or points): leave it
+                expected = b - a
+                how = f"{ends[1].model.ref} - {ends[0].model.ref} (percentage points)"
+            elif ua == ub and ua in ("currency", "none", "count") and d.unit == "percent" and a > 0:
+                expected = (b / a - 1) * 100.0
+                how = f"{ends[1].model.ref} / {ends[0].model.ref} - 1"
+            else:
+                continue
+            confirm = m.status == "mismatch" and m.method not in ("derived",)
+            if m.status in ("unmatched", "ambiguous", "mismatch", "matched_value_only") and _apply(
+                    m, expected, ends[1].model, how, config, other=ends[0].model, confirm_only=confirm):
                 changed += 1
     return changed
 

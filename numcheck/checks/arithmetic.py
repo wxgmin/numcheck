@@ -248,6 +248,11 @@ _SIGN_CUE = re.compile(r"\b(?:less|minus|repay\w*|redemption|amorti[sz]\w*|outfl
                        r"plus|add|issuance|proceeds|inflow)\b|\(\s*[-+]\s*\)|^\s*[-+]", re.I)
 
 
+_OUTFLOW_CUE = re.compile(r"\b(?:repay\w*|prepay\w*|redemptions?|redeemed|amorti[sz]\w*|outflows?|paid|payments?|"
+                          r"sweep|repurchases?|buybacks?|distributions?|dividends?|write[- ]?offs?|"
+                          r"depreciation|withdrawals?|disposals?|retirements?)\b", re.I)
+
+
 def _roll_forward(total, opening, flows, label_of, config, collector, axis) -> bool:
     """opening + flows = closing. Returns True when it handled (reconciled or flagged) the closing line."""
     tdim, tlo, thi = interval_of(total, config)
@@ -261,6 +266,13 @@ def _roll_forward(total, opening, flows, label_of, config, collector, axis) -> b
         return True
     comps = [opening] + flows
     lo, hi, centre = _sum_of(comps, label_of, config)
+    for f in flows:
+        # "Mandatory amortization 10.0", "Optional prepayment 40.0": reductions shown positive in a balance
+        # roll-forward are subtracted (a "Less:" line is already negated by _sum_of).
+        if _OUTFLOW_CUE.search(label_of(f) or "") and not _is_subtract_label(label_of(f)):
+            a, b, v = _signed_interval(f, label_of(f), config)
+            if v > 0:
+                lo, hi, centre = lo - a - b, hi - a - b, centre - 2 * v
     if not intervals_overlap(lo, hi, tlo, thi):
         _emit_total_issue(total, comps, lo, hi, centre, label_of, config, collector, axis,
                           "opening balance plus the period's movement")
@@ -294,7 +306,7 @@ def _walk_line(items, is_total, label_of, config, collector, axis) -> None:
 def _table_cells(deck_numbers):
     tables: dict[tuple[int, str], dict[tuple[int, int], DeckNumber]] = defaultdict(dict)
     for d in deck_numbers:
-        if d.source.value == "table" and d.table_row >= 0 and d.table_col >= 0:
+        if d.source.value == "table" and d.table_row >= 0 and d.table_col >= 0 and not d.label_cell:
             tables[(d.slide_number, d.shape_id)].setdefault((d.table_row, d.table_col), d)
     return tables
 

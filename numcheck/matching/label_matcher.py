@@ -29,6 +29,7 @@ from numcheck.periods import find_periods
 STOPWORDS = {
     "total", "subtotal", "sum", "of", "the", "a", "an", "and",
     "for", "at", "as", "in", "to", "on", "by", "per",
+    "less", "plus", "add", "minus",   # sign markers: "Less: cash", "Plus: D&A"
 }
 
 UNIT_TOKENS = {
@@ -91,7 +92,7 @@ def _stem(t: str) -> str:
 
 FINANCE_STEMS = frozenset(_stem(w) for w in FINANCE_VOCAB) | FINANCE_VOCAB
 
-_PERIOD_TOKEN = re.compile(r"^(?:(?:fy|cy|y)\d{2}(?:q[1-4]|h[12]|m[369])?|ltm|ntm|q[1-4])$")
+_PERIOD_TOKEN = re.compile(r"^(?:(?:fy|cy|y)\d{2}(?:q[1-4]|h[12]|m[369]|mo\d{2})?|ltm|ntm|q[1-4])$")
 _NUM_SUFFIX = re.compile(r"^\d+s$")
 _RATIO_RE = re.compile(r"[a-z0-9)]\s*/\s*[a-z0-9(]")
 _PROPER_RE = re.compile(r"\b[A-Z][a-z]{2,}\b")

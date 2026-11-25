@@ -357,10 +357,10 @@ def _currency_only(h: UnitHint | None, label: str) -> UnitHint | None:
     banner scale ("in millions") instead of pinning the scale to "units".  Per-share labels keep it."""
     if h is None or not (h.currency and not h.scale and h.scale_known) or _PER_SHARE_RE.search(label or ""):
         return h
-    from numcheck.matching.normalizer import _PER_UNIT_RE
+    from numcheck.matching.normalizer import _PER_UNIT_RE, is_unit_price_label
 
-    if _PER_UNIT_RE.search(label or ""):
-        return h   # "PPA price ($/MWh)": a per-unit price keeps raw scale; the banner must not apply
+    if _PER_UNIT_RE.search(label or "") or is_unit_price_label(label or ""):
+        return h   # "PPA price ($/MWh)", "52-week high (EUR)": a price keeps raw scale; the banner must not apply
     return UnitHint(dimension=h.dimension, scale="", currency=h.currency, scale_known=False,
                     per_share_exception=h.per_share_exception, source=h.source)
 

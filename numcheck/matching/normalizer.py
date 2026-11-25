@@ -510,15 +510,20 @@ def parse_unit_banner(text: str) -> UnitHint:
     # Dimension
     # Rate words only count when they END the label ("EBITDA margin", "Tax rate (%)"),
     # never mid-phrase ("Fund capex and growth investments", "margin of safety").
-    rate_word = re.search(r"\b(?:margin|growth|yield|rate|cagr|penetration)\s*(?:\([^)]*\))?\s*$", t.strip())
+    # Like the scale, the dimension comes from the primary statement: "($ in millions, except multiples)"
+    # names an exception, not the unit of the block.
+    p = primary
+    # "Run-rate", "exit rate" name an annualised amount, not a percentage.
+    rate_word = re.search(r"\b(?:margin|growth|yield|(?<!run-)(?<!run )(?<!exit )rate|cagr|penetration)\s*"
+                          r"(?:\([^)]*\))?\s*$", p.strip())
     # A rate written into a name ("6.375% Senior notes", "5% preferred stock") is the instrument, not the
     # row's unit: a bare % only counts when no digit precedes it.
-    if re.search(r"\(\s?%\s?\)|(?<![a-z0-9.])%(?:\s|\)|$)|\bin\s+%|\bpercent(?:age)?\b", t) or rate_word:
-        if not hint.currency or re.search(r"\(\s?%\s?\)", t):
+    if re.search(r"\(\s?%\s?\)|(?<![a-z0-9.])%(?:\s|\)|$)|\bin\s+%|\bpercent(?:age)?\b", p) or rate_word:
+        if not hint.currency or re.search(r"\(\s?%\s?\)", p):
             hint.dimension = "percent"
-    if re.search(r"\(\s?bps\s?\)|\bbps\b|\bbasis points\b", t):
+    if re.search(r"\(\s?bps\s?\)|\bbps\b|\bbasis points\b", p):
         hint.dimension = "bps"
-    if _MULT_HINT_RE.search(t):
+    if _MULT_HINT_RE.search(p):
         hint.dimension = "multiple"
     if hint.dimension == "none" and hint.currency:
         hint.dimension = "currency"
@@ -541,6 +546,10 @@ def parse_unit_banner(text: str) -> UnitHint:
     elif _COUNT_NOUN_RE.search(t.strip()) and hint.dimension == "none" and not hint.currency and not hint.scale:
         # "New logos", "Customers", "Headcount", "Stores": a count column, even on a "$ in thousands" sheet.
         hint.dimension, hint.scale, hint.scale_known = "count", "", True
+    elif (hint.dimension == "none" and not hint.currency and _COUNT_TAIL_RE.search(t.strip())
+          and not _AMOUNT_WORD_RE.search(t)):
+        # "Patient visits (000s)", "Clinics", "Employees (#)", "Members (m)": counts keep their own scale.
+        hint.dimension, hint.scale_known = "count", True
     elif _PHYSICAL_UNIT_RE.search(t) and hint.dimension == "none" and not hint.currency:
         # "Installed capacity (MW)", "Generation (GWh)", "Production (kboe/d)": physical quantities, not money.
         hint.dimension, hint.scale, hint.scale_known = "count", "", True
@@ -551,6 +560,16 @@ _COUNT_NOUN_RE = re.compile(
     r"^(?:(?:new|total|active|net|paying|gross|number\s+of|no\.\s+of|#\s*(?:of)?)\s+)*"
     r"(?:logos|customers|clients|users|subscribers|employees|headcount|ftes?|stores|locations|doors|accounts|"
     r"members|patients|deals|transactions|branches|restaurants|sites|properties|units)\s*(?:\(#\))?$", re.I)
+_COUNT_TAIL_RE = re.compile(
+    r"\b(?:logos|customers|clients|users|subscribers|employees|headcount|ftes?|stores|locations|doors|accounts|"
+    r"members|patients|visits|clinics|centers|centres|hospitals|beds|physicians|providers|states|countries|"
+    r"offices|facilities|branches|restaurants|sites|properties|units|vehicles|trucks|homes|households|policies|"
+    r"claims|orders|shipments|passengers|guests|students|schools|deals|transactions|gyms|studios|franchisees|"
+    r"pharmacies|dealerships|warehouses|plants|mines|wells|towers|tenants|subscriptions|downloads)"
+    r"(?:\s+(?:of|in|at)\s+[a-z]+(?:\s+[a-z]+)?)?\s*(?:\([^)$€£%]*\))?$", re.I)
+_AMOUNT_WORD_RE = re.compile(
+    r"\b(?:revenue|revenues|sales|income|ebitda|ebit|cost|costs|spend|expense|expenses|value|price|fees?|arr|mrr|"
+    r"bookings|profit|margin|capex|cash|debt|per|average|avg|growth|cagr|share|%)\b|[$€£¥]|/", re.I)
 _PHYSICAL_UNIT_RE = re.compile(
     r"\(\s*(?:mw|gw|kw|mwh|gwh|twh|kwh|mwp|boe|kboe|mmboe|boe/d|kboe/d|bbl|kbbl|mmbbl|bcf|mmcf|mcf|tonnes?|kt|mt|"
     r"oz|koz|moz|sq\.?\s?ft|sqm|m2|beds|rooms|keys|units|stores|sites|employees|fte|subscribers|customers|users|"
@@ -569,6 +588,20 @@ FX_RATE_RE = re.compile(
     r"(?<![a-z])" + _FX_CCY + r"\s*[/:]\s*" + _FX_CCY + r"(?![a-z])|\b(?:fx|exchange|conversion|translation)\s+rates?\b|"
     r"(?<![a-z])" + _FX_CCY + r"\s+per\s+" + _FX_CCY + r"(?![a-z])|\b(?:eurusd|gbpusd|usdjpy|eurgbp|usdchf|audusd|usdcad)\b",
     re.I)
+
+
+_UNIT_PRICE_RE = re.compile(
+    r"\b(?:(?<!purchase )(?<!transaction )(?<!deal )(?<!acquisition )(?<!sale )(?<!aggregate )(?<!total )price|"
+    r"vwap|52[- ]?week\s+(?:high|low)|strike|nav\s+per)\b|"
+    r"(?:\bper|/)\s*(?:visit|location|member|patient|bed|room|unit|clinic|store|site|user|subscriber|customer|"
+    r"employee|head|tonne?|share|door|key|sq\.?\s?ft|mwh|kwh|boe|bbl|barrel|oz|ounce)\b", re.I)
+
+
+def is_unit_price_label(text: str) -> bool:
+    """"Revenue / visit ($)", "52-week high", "Offer price per share", "PPA price ($/MWh)": a per-unit price,
+    stated in raw currency units whatever scale the slide or sheet banner gives its amounts."""
+    t = text or ""
+    return bool(_UNIT_PRICE_RE.search(t) or _PER_UNIT_RE.search(t))
 
 
 def is_fx_rate_label(text: str) -> bool:
@@ -852,9 +885,11 @@ def compare(deck, mv, config) -> Comparison | None:
 # in parentheses (or not). Changes, growth, margins and returns are never sign-agnostic.
 _COST_LABEL_RE = re.compile(
     r"\b(?:costs?|expenses?|expenditures?|opex|capex|maintenance|d&a|depreciation|amorti[sz]ation|"
-    r"interest\s+(?:expense|paid|costs?)|taxes|tax\s+(?:paid|expense|charge)|dividends?\s+paid|fees?|"
+    r"interest(?!\s+(?:income|rate|cover|coverage|earned))|taxes|tax\s+(?:paid|expense|charge)|dividends?\s+paid|fees?|"
+    r"deductions?|"
     r"outflows?|uses|repayments?|purchases?|acquisitions?|write[- ]?(?:downs?|offs?)|impairments?|"
     r"provisions?|stock[- ]based\s+comp\w*|sbc|cogs|sg&a|sga|r&d)\b", re.I)
+_DEDUCTION_RE = re.compile(r"(?:^|[^a-z])(?:less|minus)\s*:", re.I)   # "Less: cash", "Minus: fees"
 _SIGNED_METRIC_RE = re.compile(
     r"\b(?:growth|change|chg|var(?:iance)?|margin|return|irr|yield|delta|movement|net|profit|income|"
     r"result|ebitda|ebit|earnings|cash\s+flow|fcf|surplus|deficit|gain)\b", re.I)
@@ -877,6 +912,8 @@ def sign_by_convention(deck, mv) -> bool:
     label = f"{getattr(deck, 'label', '')} {getattr(mv, 'row_label', '')}"
     if "change" in quals:
         return False
+    if _DEDUCTION_RE.search(label) and deck.value < 0 < getattr(mv, "value", 0):
+        return True     # a "Less:" row shows a positive model amount in brackets, as a deduction
     if _COST_LABEL_RE.search(label) and not _SIGNED_METRIC_RE.search(getattr(mv, "row_label", "") or ""):
         return True
     raw = getattr(deck, "raw_text", "") or ""
