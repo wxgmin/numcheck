@@ -1,25 +1,75 @@
-"""End-to-end demo test: all 10 planted errors are caught, control is clean."""
+"""End-to-end regressions for the original and visual demo cases."""
 
 import tempfile
 from pathlib import Path
 
-from numcheck.config import load_config
+from openpyxl import Workbook
+from pptx import Presentation
+from pptx.util import Inches
+
+from numcheck.config import Config, load_config
 from numcheck.demo import build_demo
+from numcheck.demo.build_deck import build_deck
+from numcheck.demo.build_model import build_model
 from numcheck.runner import run_review
 
 
+def test_growth_phrasing_through_real_presentation_and_workbook(tmp_path):
+    model = tmp_path / "operations.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["Metric", "FY22A", "FY23A", "FY24A"])
+    workbook.active.append(["Subscribers", 1000, 1100, 1210])
+    workbook.active.append(["Revenue", 200, 225, 250])
+    workbook.save(model)
+
+    deck = tmp_path / "review.pptx"
+    presentation = Presentation()
+    for claim in (
+        "Subscribers compounded at 10% annually between FY22 and FY24",
+        "Sales increased 25% from FY22 through FY24",
+        "Sales annualized growth was 11.8% from FY22 through FY24",
+    ):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(7), Inches(1)).text = claim
+    presentation.save(deck)
+
+    result = run_review(str(deck), [str(model)], out_dir=str(tmp_path / "report"), annotate=False, config=Config())
+    derived = {match.deck.slide_number: match for match in result.matches if match.method == "derived"}
+    assert {number: match.status for number, match in derived.items()} == {1: "matched", 2: "matched", 3: "matched"}
+    assert "CAGR" in derived[1].note and "CAGR" in derived[3].note
+    assert "cumulative growth" in derived[2].note
+    assert [cell.cell_address for cell in derived[1].derivation_inputs] == ["D2", "B2"]
+
+
 def _has(issues, slide, issue_type, value_fragment=None):
+    """True if the finding exists as an issue, or folded into a primary issue's ``related``.
+
+    Findings that repeat a model mismatch on the same number (e.g. cross-slide
+    inconsistency of a wrong EBITDA) are folded into that mismatch so each number
+    surfaces once; they remain part of the result.
+    """
     for i in issues:
-        if i.slide_number == slide and i.issue_type.value == issue_type:
-            if value_fragment is None or value_fragment in i.deck_value:
-                return True
+        if i.slide_number != slide:
+            continue
+        if value_fragment is not None and value_fragment not in i.deck_value:
+            continue
+        if i.issue_type.value == issue_type:
+            return True
+        if any(r.get("issue_type") == issue_type for r in i.related):
+            return True
     return False
 
 
-def test_demo_catches_all_planted_errors():
+def test_original_demo_catches_all_planted_errors():
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "samples"
-        paths = build_demo(out)
+        out.mkdir()
+        paths = {key: str(out / name) for key, name in (
+            ("deck", "deck.pptx"), ("model", "model.xlsx"), ("model_old", "model_old.xlsx")
+        )}
+        build_deck(paths["deck"])
+        build_model(paths["model"])
+        build_model(paths["model_old"], implied_ev=5200.0)
 
         cfg = load_config(None)
         cfg.llm = "off"
@@ -59,3 +109,54 @@ def test_demo_catches_all_planted_errors():
     assert not any("$6.2bn" in i.deck_value for i in issues)
     # No ambiguity should remain with the deterministic matcher.
     assert not any(i.issue_type.value == "ambiguous" for i in issues)
+
+
+def test_keystone_visual_demo_traces_every_planted_discrepancy(tmp_path):
+    paths = build_demo(tmp_path / "keystone")
+    cfg = load_config(None)
+    cfg.llm = "off"
+    cfg.require_label_evidence = True
+    result = run_review(
+        paths["deck"], [paths["model"]], paths["model_old"], str(tmp_path / "report"),
+        config=cfg, annotate=True,
+    )
+    issues = result["issues"]
+    assert {
+        (issue.slide_number, issue.issue_type.value, issue.deck_value, issue.expected_value,
+         issue.source_cell.partition("] ")[2])
+        for issue in issues if issue.severity.value in {"high", "medium"}
+    } == {
+        (2, "mismatch", "2.8x", "2.5x", "Cap!C15"),
+        (2, "mismatch", "11.6%", "9.6%", "Segments!F11"),
+        (3, "mismatch", "1,056.6", "1,065.6", "Segments!E10"),
+        (3, "stale", "275.0", "269.9", "Adj EBITDA!G11"),
+        (4, "mismatch", "23.6%", "21.6%", "Segments!F21"),
+        (4, "mismatch", "$348.1m", "$384.1m", "Segments!F8"),
+        (5, "mismatch", "4.6", "6.4", "Adj EBITDA!F9"),
+        (6, "mismatch", "13.9x", "12.9x", "Comps!K9"),
+        (8, "mismatch", "2,854", "2,754", "DCF!D39"),
+        (9, "mismatch", "3,740", "3,470", "Valuation!G7"),
+        (10, "mismatch", "724.0", "742.0", "Cap!C10"),
+    }
+    stale = next(issue for issue in issues if issue.issue_type.value == "stale")
+    assert stale.details["old_cell"] == "[Keystone_Model_v3_prior.xlsx] Adj EBITDA!G11"
+
+    verified_sources = {(m.deck.slide_number, m.deck.raw_text, m.model.sheet_name, m.model.cell_address)
+                        for m in result.matches if m.status == "matched" and m.model is not None}
+    assert {
+        (1, "$1,168m", "Segments", "F10"),
+        (1, "$253.0m", "Adj EBITDA", "F11"),
+        (1, "21.7%", "Adj EBITDA", "F12"),
+        (2, "$1,463m", "Segments", "I10"),
+        (4, "+8.7%", "Segments", "F14"),
+        (4, "+12.0%", "Segments", "F15"),
+        (4, "+8.2%", "Segments", "F16"),
+        (6, "12.4x", "Comps", "K12"),
+        (8, "709.8", "DCF", "C23"),
+        (8, "2,973.3", "DCF", "C26"),
+        (8, "(623.5)", "DCF", "C27"),
+        (8, "$27.78", "DCF", "C30"),
+        (10, "2.9x", "Cap", "C14"),
+    } <= verified_sources
+    assert {m.model.cell_address for m in result.matches if m.deck.slide_number == 7 and m.deck.source.value == "table"
+            and m.deck.unit == "multiple" and m.status == "matched"} == {f"F{row}" for row in (5, 6, 7, 8, 9, 10, 12)}

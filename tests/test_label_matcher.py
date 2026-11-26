@@ -37,3 +37,33 @@ def test_label_score_rejects_unrelated():
     deck = normalize_label("Total Addressable Market", cfg)
     market_cap = _mv(named="Market_Cap", row="Market Cap ($m)")
     assert label_score(deck, market_cap, cfg) < 0.35
+
+
+def test_ampersand_and_punctuation_tokens():
+    cfg = Config()
+    assert normalize_label("EV / EBITDA", cfg).split()[:3] == ["enterprise", "value", "ebitda"]
+    assert normalize_label("Research & Development", cfg) == "research and development"
+
+
+def test_longest_abbreviation_wins_without_cascading():
+    cfg = Config()
+    assert normalize_label("Net sales", cfg) == "revenue"       # not "net revenue"
+    assert normalize_label("Sales", cfg) == "revenue"
+    assert normalize_label("Operating income", cfg) == "ebit"
+
+
+def test_plural_folding_is_consistent():
+    cfg = Config()
+    assert normalize_label("Operating Expenses", cfg) == normalize_label("operating expense", cfg)
+    assert normalize_label("Taxes", cfg) == normalize_label("Tax", cfg)
+
+
+def test_unit_noise_and_numbers_dropped():
+    cfg = Config()
+    assert normalize_label("Revenue ($ in millions) 2024 1,200", cfg) == "revenue y24"
+    assert metric_key("EBITDA margin (%)", cfg) == "ebitda margin"
+
+
+def test_metric_key_keeps_qualifiers():
+    cfg = Config()
+    assert metric_key("Adjusted EBITDA", cfg) != metric_key("EBITDA", cfg)

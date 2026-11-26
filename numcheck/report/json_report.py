@@ -5,28 +5,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from numcheck.models import Issue
-from numcheck.report import summarize
+from numcheck import __version__
+from numcheck.models import Issue, ReviewResult
+from numcheck.report import as_result, result_to_dict
+
+SCHEMA_VERSION = 2
 
 
-def write_json_report(issues: list[Issue], out_path: str | Path) -> None:
-    data = {
-        "summary": summarize(issues),
-        "issues": [_issue_to_dict(i) for i in issues],
-    }
-    Path(out_path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+def build_json(result: "ReviewResult | list[Issue]") -> dict:
+    res = as_result(result)
+    data = {"schema_version": SCHEMA_VERSION, "tool": "numcheck", "version": __version__}
+    data.update(result_to_dict(res))
+    return data
 
 
-def _issue_to_dict(i: Issue) -> dict:
-    return {
-        "id": i.id,
-        "slide_number": i.slide_number,
-        "deck_value": i.deck_value,
-        "expected_value": i.expected_value,
-        "source_cell": i.source_cell,
-        "issue_type": i.issue_type.value,
-        "severity": i.severity.value,
-        "message": i.message,
-        "metric_key": i.metric_key,
-        "shape_id": i.shape_id,
-    }
+def write_json_report(result: "ReviewResult | list[Issue]", out_path: str | Path) -> None:
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(build_json(result), indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")

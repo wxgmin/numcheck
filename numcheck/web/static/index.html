@@ -1,345 +1,468 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NumCheck — Deck Review</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#080C11;
-  --bg-2:#0C1118;
-  --surface:#10161E;
-  --surface-2:#141B24;
-  --surface-3:#1A222D;
-  --border:#212B38;
-  --border-strong:#2C3948;
-  --text:#EAF0F6;
-  --muted:#8B96A6;
-  --dim:#5B6675;
-  --amber:#F5B94A;
-  --amber-strong:#FFD27A;
-  --red:#FF5C5C;
-  --teal:#2FD3B5;
-  --mono:"IBM Plex Mono",ui-monospace,monospace;
-  --sans:"IBM Plex Sans",system-ui,sans-serif;
-  --serif:"Fraunces",Georgia,serif;
-}
-*{box-sizing:border-box}
-html,body{margin:0;padding:0}
-body{
-  background-color:var(--bg);
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='30'%3E%3Ccircle cx='1.5' cy='1.5' r='1' fill='%2318202B'/%3E%3C/svg%3E");
-  color:var(--text);
-  font-family:var(--sans);
-  font-size:14px;
-  line-height:1.5;
-  -webkit-font-smoothing:antialiased;
-}
-body::before{
-  content:"";
-  position:fixed;top:0;left:0;right:0;height:3px;
-  background:var(--amber);
-  z-index:50;
-}
-.wrap{max-width:1400px;margin:0 auto;padding:28px 32px 56px}
-
-/* Header */
-header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:26px}
-.brand{display:flex;flex-direction:column;gap:6px}
-.brand .logo{font-family:var(--serif);font-size:38px;font-weight:600;letter-spacing:-.5px;line-height:1;color:var(--text)}
-.brand .logo span{color:var(--amber)}
-.brand .sub{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
-.status{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--muted)}
-.status .dot{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 0 rgba(47,211,181,.5);animation:pulse 2.4s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(47,211,181,.5)}70%{box-shadow:0 0 0 9px rgba(47,211,181,0)}100%{box-shadow:0 0 0 0 rgba(47,211,181,0)}}
-
-/* Layout */
-.grid{display:grid;grid-template-columns:360px 1fr;gap:26px;align-items:start}
-@media(max-width:980px){.grid{grid-template-columns:1fr}}
-
-/* Panels */
-.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden}
-.panel-head{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-.panel-head h2{font-family:var(--serif);font-weight:600;font-size:16px;margin:0;letter-spacing:.2px}
-.panel-head .kicker{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.14em;text-transform:uppercase}
-.panel-body{padding:18px}
-
-/* Controls */
-.field{margin-bottom:18px}
-.field label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
-.filebox{position:relative;display:flex;align-items:center;gap:10px;border:1px dashed var(--border-strong);border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .2s,background-color .2s;background:var(--surface-2)}
-.filebox:hover{border-color:var(--amber);background:var(--surface-3)}
-.filebox input{position:absolute;inset:0;opacity:0;cursor:pointer}
-.filebox .ic{font-family:var(--mono);color:var(--amber);font-size:15px}
-.filebox .txt{font-family:var(--mono);font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.filebox.has .txt{color:var(--text)}
-.filebox .hint{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--dim)}
-
-select,input[type=text],input[type=number]{
-  width:100%;background:var(--surface-2);border:1px solid var(--border-strong);
-  border-radius:9px;color:var(--text);font-family:var(--mono);font-size:13px;padding:10px 12px;outline:none;
-}
-select:focus,input:focus{border-color:var(--amber)}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.check{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--muted)}
-.check input{accent-color:var(--amber);width:16px;height:16px}
-
-/* Buttons */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;border-radius:10px;font-family:var(--mono);font-size:13px;font-weight:600;letter-spacing:.02em;padding:12px 16px;cursor:pointer;border:1px solid transparent;transition:transform .08s,box-shadow .2s,background-color .2s}
-.btn:active{transform:translateY(1px)}
-.btn-primary{background:var(--amber);color:#17110A;width:100%}
-.btn-primary:hover{background:var(--amber-strong);box-shadow:0 6px 20px rgba(245,185,74,.18)}
-.btn-ghost{background:transparent;border-color:var(--border-strong);color:var(--muted);width:100%}
-.btn-ghost:hover{border-color:var(--amber);color:var(--text)}
-.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
-
-/* Results */
-.results{display:flex;flex-direction:column;gap:18px}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-@media(max-width:760px){.cards{grid-template-columns:repeat(2,1fr)}}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
-.card .num{font-family:var(--mono);font-size:30px;font-weight:600;line-height:1}
-.card .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:8px}
-.card.total .num{color:var(--text)}
-.card.high .num{color:var(--red)}
-.card.medium .num{color:var(--amber)}
-.card.low .num{color:var(--teal)}
-
-.toolbar{display:flex;gap:12px;align-items:center}
-.toolbar input{flex:1}
-.toolbar select{width:auto;min-width:130px}
-
-.table-panel{border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface)}
-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
-thead th{position:sticky;top:0;background:var(--surface-3);color:var(--muted);text-align:left;font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:12px 14px;border-bottom:1px solid var(--border);font-weight:500}
-tbody td{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:top}
-tbody tr{transition:background-color .12s}
-tbody tr:hover{background:var(--surface-2)}
-td.slide{color:var(--dim);font-weight:600}
-td.mono{color:var(--text)}
-td.msg{color:var(--muted);min-width:240px}
-.badge{display:inline-block;padding:3px 9px;border-radius:99px;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
-.badge.high{background:rgba(255,92,92,.12);color:var(--red);border:1px solid rgba(255,92,92,.35)}
-.badge.medium{background:rgba(245,185,74,.12);color:var(--amber);border:1px solid rgba(245,185,74,.35)}
-.badge.low{background:rgba(47,211,181,.12);color:var(--teal);border:1px solid rgba(47,211,181,.35)}
-
-.empty{padding:64px 24px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:13px}
-.empty .big{font-family:var(--serif);font-size:22px;color:var(--muted);margin-bottom:10px}
-
-.downloads{display:flex;gap:10px;flex-wrap:wrap}
-.dl{font-family:var(--mono);font-size:12px;color:var(--amber);text-decoration:none;border:1px solid var(--border-strong);border-radius:8px;padding:8px 12px;transition:border-color .2s,color .2s}
-.dl:hover{border-color:var(--amber);color:var(--amber-strong)}
-
-.spinner{width:18px;height:18px;border:2px solid rgba(23,17,10,.35);border-top-color:#17110A;border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-
-.reveal{animation:rise .5s cubic-bezier(.22,.9,.32,1) both;animation-delay:var(--d,0s)}
-@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-
-.error{background:rgba(255,92,92,.08);border:1px solid rgba(255,92,92,.35);color:var(--red);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:12px}
-.meta{font-family:var(--mono);font-size:11px;color:var(--dim)}
-</style>
+<meta name="color-scheme" content="light dark">
+<title>NumCheck</title>
+<meta name="description" content="Check figures in a PowerPoint deck against the original Excel models.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3' y='3' width='18' height='18' rx='3' fill='none' stroke='%23075849' stroke-width='2'/%3E%3Cpath d='M7.5 12.5l3 3 6-7' fill='none' stroke='%23075849' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="brand">
-      <div class="logo">Num<span>Check</span></div>
-      <div class="sub">Pitchbook number reconciliation</div>
-    </div>
-    <div class="status"><span class="dot"></span>local engine</div>
+<a class="skip-link" href="#view">Skip to workspace</a>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7.5 12.5l3 3 6-7"/></svg>
+    <span class="wordmark">NumCheck</span>
+  </div>
+  <div class="run-status" id="runStatus" data-state="idle">
+    <span id="runStatusText" role="status" aria-live="polite">Ready</span>
+  </div>
+  <div class="spacer"></div>
+  <button type="button" class="icon-btn" id="themeBtn" aria-label="Switch to dark theme" title="Toggle theme">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+    <span id="themeLabel">Dark</span>
+  </button>
+  <button type="button" class="icon-btn" id="helpBtn" aria-label="Review guide" data-tip="Open the review guide and keyboard shortcuts (?)">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8"/><path d="M12 17h.01"/></svg>
+    <span>Help</span>
+  </button>
+</header>
+
+<div class="layout" id="layout" data-view="empty">
+  <header class="setup-intro" id="setupIntro">
+    <h1>Check PowerPoint against Excel</h1>
+    <p>Add a PowerPoint deck and the Excel files behind it. NumCheck flags figures to investigate and shows the source cells it finds.</p>
+    <a class="demo-jump" href="#emptyView">Jump to the demo</a>
   </header>
-
-  <div class="grid">
-    <aside class="panel reveal" style="--d:.05s">
-      <div class="panel-head"><h2>Run a review</h2><span class="kicker">inputs</span></div>
-      <div class="panel-body">
-        <div class="field">
-          <label>Deck (.pptx)</label>
-          <div class="filebox" id="deck-box"><span class="ic">▤</span><span class="txt" id="deck-txt">Choose pitchbook</span><span class="hint">required</span><input type="file" id="deck" accept=".pptx"></div>
+  <div class="inline-error run-error" id="formError" role="alert" tabindex="-1" hidden></div>
+  <aside class="panel" id="setupPanel" aria-labelledby="upload-title">
+    <form id="reviewForm" novalidate>
+      <div class="ai-review" id="setupAiProvider">
+        <div class="field-heading">
+          <label class="ai-toggle" for="llm-auto">
+            <input type="checkbox" id="llm-auto" aria-describedby="ai-review-status">
+            Use AI during reviews
+          </label>
+          <button type="button" class="tip-trigger" aria-label="What AI adds" data-tip="AI can suggest which candidate label best describes a figure. You can also ask on demand from Inspect. Cloud providers receive labels and period names, which can include client or deal names. NumCheck masks figures in the text and compares values locally. Requests use the selected provider allowance.">?</button>
         </div>
-        <div class="field">
-          <label>Models (.xlsx)</label>
-          <div class="filebox" id="models-box"><span class="ic">▦</span><span class="txt" id="models-txt">Choose one or more models</span><span class="hint">required</span><input type="file" id="models" accept=".xlsx" multiple></div>
-        </div>
-        <div class="field">
-          <label>Previous model (.xlsx) — optional</label>
-          <div class="filebox" id="old-box"><span class="ic">↶</span><span class="txt" id="old-txt">For staleness check</span><span class="hint">optional</span><input type="file" id="model-old" accept=".xlsx"></div>
-        </div>
-
-        <div class="field">
-          <label>LLM provider</label>
-          <select id="llm">
-            <option value="off">off — deterministic only</option>
-            <option value="openai">openai</option>
-            <option value="anthropic">anthropic</option>
-            <option value="openai-compatible">openai-compatible</option>
-            <option value="ollama">ollama</option>
-            <option value="codex">codex (ChatGPT login)</option>
-          </select>
-        </div>
-
-        <div class="row">
+        <p class="note">AI helps identify the right Excel source when a figure is hard to match.</p>
+        <p class="note" id="ai-review-status" role="status">Off by default.</p>
+        <details class="settings ai-settings" id="ai-settings">
+          <summary>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            AI provider settings
+          </summary>
           <div class="field">
-            <label>Base tolerance</label>
-            <input type="number" id="tolerance" value="0.006" step="0.001" min="0">
+            <button type="button" class="btn small" id="chatgpt-shortcut">Connect ChatGPT</button>
+            <label for="set-llm">AI provider</label>
+            <select id="set-llm"><option value="off">Off (deterministic only)</option></select>
+            <p class="note" id="llm-note">Checks slide numbers against Excel locally.</p>
+            <div class="provider-fields" id="provider-fields" hidden>
+              <label for="llm-model" id="llm-model-label">Model ID</label>
+              <div id="chatgpt-connect" class="field" hidden>
+                <div class="evidence-actions">
+                  <button type="button" class="btn small inspect-btn" id="chatgpt-signin">Continue with ChatGPT</button>
+                  <button type="button" class="btn small" id="chatgpt-disconnect" hidden>Disconnect</button>
+                </div>
+                <p class="note" id="chatgpt-status" role="status"></p>
+                <p class="note" id="chatgpt-recovery"></p>
+                <label for="chatgpt-model">ChatGPT model</label>
+                <select id="chatgpt-model" disabled><option value="">Connect to load models</option></select>
+              </div>
+              <input id="llm-model" type="text" maxlength="200" autocomplete="off" spellcheck="false">
+              <div class="field" id="llm-key-field" hidden>
+                <label for="llm-key">Provider API key</label>
+                <input id="llm-key" type="password" maxlength="4096" autocomplete="off" spellcheck="false">
+                <p class="note">Held in this tab until you change providers or reload.</p>
+              </div>
+              <p class="note" id="provider-setup"></p>
+              <label for="llm-redact">Terms to redact <span class="note">(optional)</span></label>
+              <textarea id="llm-redact" data-tip="List the names you want removed before sending labels to your AI provider" rows="2" maxlength="2000" placeholder="One client, deal or project name per line"></textarea>
+              <button class="btn small" id="test-provider" type="button">Check connection</button>
+              <p class="note" id="provider-status" role="status"></p>
+            </div>
           </div>
-          <div class="field" style="display:flex;align-items:flex-end;padding-bottom:2px">
-            <label class="check"><input type="checkbox" id="annotate" checked> Annotate deck</label>
+        </details>
+      </div>
+      <h2 class="section-title" id="upload-title">Add your files</h2>
+
+      <div class="dz" data-upload-slot="deck">
+        <div class="dz-head"><span class="dz-title" id="lbl-deck">PowerPoint deck</span><span class="dz-opt">Required</span></div>
+        <p class="dz-hint">The presentation you want to check (.pptx or .pptm).</p>
+        <div class="dz-actions">
+          <input class="visually-hidden" type="file" id="in-deck" accept=".pptx,.pptm" aria-labelledby="lbl-deck">
+          <label class="btn small" for="in-deck">Choose PowerPoint</label>
+        </div>
+        <ul class="files" id="files-deck"></ul>
+      </div>
+
+      <div class="dz" data-upload-slot="models">
+        <div class="dz-head"><span class="dz-title" id="lbl-models">Current Excel models</span><span class="dz-opt">Required</span></div>
+        <p class="dz-hint">Add the latest workbook or workbooks used to prepare the deck (.xlsx or .xlsm).</p>
+        <div class="dz-actions">
+          <input class="visually-hidden" type="file" id="in-models" accept=".xlsx,.xlsm" multiple aria-labelledby="lbl-models">
+          <label class="btn small" for="in-models">Choose Excel files</label>
+        </div>
+        <ul class="files" id="files-models"></ul>
+      </div>
+
+      <details class="settings" id="optionalSetup">
+        <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>Optional files and settings</summary>
+        <div class="dz" data-upload-slot="old">
+          <div class="dz-head"><span class="dz-title" id="lbl-old">Prior Excel model</span><span class="dz-opt">Optional</span></div>
+          <p class="dz-hint">Add an earlier version to flag stale figures.</p>
+          <div class="dz-actions">
+            <input class="visually-hidden" type="file" id="in-old" accept=".xlsx,.xlsm" aria-labelledby="lbl-old">
+            <label class="btn small" for="in-old">Choose file</label>
+          </div>
+          <ul class="files" id="files-old"></ul>
+        </div>
+        <details class="settings" id="settings">
+          <summary>
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            How figures are checked
+          </summary>
+          <div class="settings-body">
+            <div class="field">
+              <div class="field-heading"><label for="set-rounding">Rounding</label>
+                <button type="button" class="tip-trigger" aria-label="About rounding" data-tip="Round uses the precision shown on the slide. Round or truncate also accepts digits cut off without rounding, for example 12.39 displayed as 12.3.">?</button>
+              </div>
+              <select id="set-rounding">
+                <option value="round">Round</option>
+                <option value="round_or_truncate">Round or truncate</option>
+              </select>
+            </div>
+            <div class="field">
+              <div class="field-heading"><label for="set-base">Base period</label>
+                <button type="button" class="tip-trigger" aria-label="About base period" data-tip="Leave blank to infer from the deck. Enter a period such as FY24 or LTM as the fallback for numbers without an explicit period.">?</button>
+              </div>
+              <input type="text" id="set-base" maxlength="12" placeholder="FY24" autocomplete="off">
+              <p class="note">Assumed for numbers with no period. Leave blank to infer.</p>
+            </div>
+            <div class="field">
+              <div class="field-heading"><label for="set-tol">Extra tolerance</label>
+                <button type="button" class="tip-trigger" aria-label="About extra tolerance" data-tip="Allow an extra difference after rounding. Enter a decimal fraction, such as 0.005 for 0.5%.">?</button>
+              </div>
+              <input type="number" id="set-tol" min="0" max="0.1" step="0.001" aria-describedby="tolerance-note" placeholder="0">
+              <p class="note" id="tolerance-note">Enter a decimal fraction. For 0.5%, enter 0.005.</p>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="source-search-auto" checked>
+              <div><label for="source-search-auto">Search for possible sources automatically</label>
+              <span class="note" id="source-search-note">Searches the current Excel files locally for every unresolved figure.</span></div>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="set-require-label" checked>
+              <div><label for="set-require-label">Require label evidence</label>
+              <span class="note">Leave figures unresolved when Excel sources disagree or only the number matches.</span></div>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="set-annotate" checked>
+              <div><label for="set-annotate">Annotated deck</label>
+              <span class="note">Write a copy of the deck with flagged numbers marked.</span></div>
+            </div>
+            <div class="check">
+              <input type="checkbox" id="set-ocr">
+              <div><label for="set-ocr">Read numbers in images (OCR)</label>
+              <span class="note" id="ocr-note">Reads embedded pictures locally when OCR is installed.</span></div>
+            </div>
+          </div>
+        </details>
+
+      </details>
+
+      <div class="form-actions">
+        <button type="submit" class="btn primary block" id="runBtn" data-tip="Check the PowerPoint against the selected Excel files">Start review</button>
+      </div>
+
+    </form>
+  </aside>
+
+  <main class="workspace" id="view" tabindex="-1">
+
+    <section class="demo-panel" id="emptyView" aria-labelledby="demo-title">
+      <h2 class="section-title" id="demo-title">Try the Keystone demo</h2>
+      <p class="demo-intro">Review a fictional board deck with operating forecasts, a DCF and two versions of its Excel model.</p>
+      <button type="button" class="btn primary" id="demoBtn" data-tip="Run a review with the included PowerPoint and Excel files">Try a sample review</button>
+      <figure class="trace-example">
+        <figcaption>Example finding <span>Slide 3 · Financial overview</span></figcaption>
+        <p class="trace-metric">FY25E adjusted EBITDA</p>
+        <dl class="trace-comparison">
+          <div><dt>In the deck</dt><dd>275.0<span>m</span></dd></div>
+          <div><dt>Expected from Excel</dt><dd>269.9<span>m</span></dd></div>
+        </dl>
+        <p class="trace-source"><span>Current model</span> <code>Adj EBITDA!G11</code></p>
+      </figure>
+      <div class="demo-downloads">
+        <h3>Original demo files</h3>
+        <ul>
+          <li><a href="/api/demo/files/Project_Keystone_Board_Materials.pptx" download>PowerPoint deck</a></li>
+          <li><a href="/api/demo/files/Keystone_Model_v4.xlsx" download>Current Excel model</a></li>
+          <li><a href="/api/demo/files/Keystone_Model_v3_prior.xlsx" download>Prior Excel model</a></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="progress" id="progressView" hidden>
+      <h1 id="progressTitle">Reviewing files</h1>
+      <div class="bar" aria-hidden="true"><span id="progressBar"></span></div>
+      <ol class="stages" id="stageList"></ol>
+    </section>
+
+    <section class="fatal" id="fatalView" hidden>
+      <div class="inline-error" role="alert" id="fatalBox"></div>
+    </section>
+
+    <section id="resultsView" hidden>
+      <div class="summary">
+        <div class="summary-top">
+          <div>
+            <h1 class="verdict" id="verdict"></h1>
+            <p class="run-meta" id="runMeta"></p>
+          </div>
+          <div class="review-actions">
+            <a class="btn primary findings-jump" id="reviewFigures" href="#resultTabs">Review figures</a>
+            <button type="button" class="btn" id="newReviewBtn" data-tip="Return to your files and review settings">Back to files</button>
           </div>
         </div>
+        <div class="kpis" id="kpis"></div>
+        <div class="figure-progress">
+          <span id="figureProgressText" role="status"></span>
+          <progress id="figureProgress" aria-label="Figures checked by reviewer" max="1" value="0"></progress>
+        </div>
+        <section class="source-review" id="sourceReview" aria-labelledby="sourceReviewTitle" hidden>
+          <div>
+            <h2 id="sourceReviewTitle">Look for missing sources</h2>
+            <p class="note" id="sourceReviewStatus" role="status"></p>
+          </div>
+          <div class="review-actions">
+            <button type="button" class="btn small" id="findAllSources" data-tip="Search your Excel files for candidates for every unresolved figure">Search Excel</button>
+            <button type="button" class="btn small inspect-btn" id="askAllSources" data-tip="Use your AI provider to compare masked candidate labels and periods">Ask AI for sources</button>
+          </div>
+        </section>
+        <details class="settings review-export">
+          <summary><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>Download reports and review notes</summary>
+          <div class="review-files">
+            <div>
+              <h2>Reports and exports</h2>
+              <div class="downloads" id="downloads"></div>
+              <div class="review-actions">
+                <button type="button" class="btn small" id="exportLog" data-tip="Download all findings and their review statuses and notes as a spreadsheet-ready CSV">Export review log (CSV)</button>
+                <button type="button" class="btn small" id="exportHandoff" data-tip="Download a JSON file with findings, review decisions, source references, and input file details">Export review handoff</button>
+              </div>
+            </div>
+            <div id="originalsGroup" hidden>
+              <h2>Original demo files</h2>
+              <div class="downloads" id="originals"></div>
+            </div>
+          </div>
+        </details>
+      </div>
+      <div class="warn-list" id="warnList"></div>
 
-        <div class="btn-row">
-          <button class="btn btn-primary" id="run">Run review</button>
-          <button class="btn btn-ghost" id="demo">Load demo</button>
+      <div class="tabs" id="resultTabs" role="tablist" aria-label="Results">
+        <button type="button" class="tab" role="tab" id="tab-coverage" aria-controls="pane-coverage" aria-selected="true" data-tab="coverage" data-tip="See which figures were verified and which still need a source">All figures<span class="count" id="cnt-coverage"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-issues" aria-controls="pane-issues" aria-selected="false" tabindex="-1" data-tab="issues" data-tip="Figures NumCheck flagged for review">Findings<span class="count" id="cnt-issues"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-slides" aria-controls="pane-slides" aria-selected="false" tabindex="-1" data-tab="slides" data-tip="Browse findings in presentation order">By slide<span class="count" id="cnt-slides"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-ai" aria-controls="pane-ai" aria-selected="false" tabindex="-1" data-tab="ai">AI activity<span class="count" id="cnt-ai"></span></button>
+        <button type="button" class="tab" role="tab" id="tab-warnings" aria-controls="pane-warnings" aria-selected="false" tabindex="-1" data-tab="warnings" data-tip="See file and extraction warnings that may affect the review">Warnings<span class="count" id="cnt-warnings"></span></button>
+      </div>
+
+      <div role="tabpanel" id="pane-issues" aria-labelledby="tab-issues" hidden>
+        <p class="note findings-help">Open a finding to see why it was flagged, add a note, or mark it resolved. Use Inspect to compare the slide with Excel.</p>
+        <div class="toolbar">
+          <div class="chips" id="sevChips" role="group" aria-label="Severity"></div>
+          <details class="type-filter">
+            <summary>Filter by issue type</summary>
+            <div class="chips" id="typeChips" role="group" aria-label="Type"></div>
+          </details>
+        </div>
+        <div class="toolbar">
+          <label class="visually-hidden" for="issueSearch">Search issues</label>
+          <input class="search" type="search" id="issueSearch" placeholder="Search findings" data-tip="Search by label, value, or source cell (/)" autocomplete="off">
+          <label class="visually-hidden" for="slideFilter">Slide</label>
+          <select id="slideFilter" data-tip="Show findings from a specific slide"><option value="">All slides</option></select>
+          <label class="visually-hidden" for="statusFilter">Review status</label>
+          <select id="statusFilter" data-tip="Filter by the review decisions you recorded">
+            <option value="">All statuses</option>
+            <option value="open">Open</option>
+            <option value="resolved">Resolved</option>
+            <option value="false_positive">False positive</option>
+          </select>
+          <span class="grow"></span>
+          <span class="count-line" id="issueCount" aria-live="polite"></span>
+          <button type="button" class="btn small" id="clearFilters" hidden>Clear filters</button>
+        </div>
+        <div class="tbl-wrap" tabindex="0" role="region" aria-label="Issue table">
+          <table class="tbl" id="issueTable" role="table">
+            <caption class="visually-hidden">Issues found in the deck</caption>
+            <thead role="rowgroup"><tr id="issueHead" role="row"></tr></thead>
+            <tbody id="issueBody" role="rowgroup"></tbody>
+          </table>
         </div>
       </div>
-    </aside>
 
-    <main class="results">
-      <div class="cards" id="cards"></div>
+      <div role="tabpanel" id="pane-slides" aria-labelledby="tab-slides" hidden>
+        <div id="slideList"></div>
+      </div>
 
-      <section class="panel reveal" style="--d:.15s">
-        <div class="panel-head">
-          <h2>Issues</h2>
-          <span class="meta" id="meta"></span>
+      <div role="tabpanel" id="pane-coverage" aria-labelledby="tab-coverage">
+        <p class="note findings-help">Tick a figure after reviewing it. The Status column shows how the deck value compares with Excel.</p>
+        <div class="toolbar">
+          <div class="chips" id="statusChips" role="group" aria-label="Status"></div>
+          <span class="grow"></span>
+          <label class="visually-hidden" for="covCheckFilter">Check status</label>
+          <select id="covCheckFilter">
+            <option value="">All checks</option>
+            <option value="pending">To check</option>
+            <option value="checked">Checked</option>
+          </select>
+          <label class="visually-hidden" for="covSlideFilter">Slide</label>
+          <select id="covSlideFilter"><option value="">All slides</option></select>
+          <label class="visually-hidden" for="covSearch">Search numbers</label>
+          <input class="search" type="search" id="covSearch" placeholder="Search numbers" autocomplete="off">
+          <span class="count-line" id="covCount" aria-live="polite"></span>
         </div>
-        <div class="panel-body">
-          <div class="toolbar">
-            <input type="text" id="q" placeholder="Filter by metric, value, cell, message…">
-            <select id="sev"><option value="">All severities</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
-          </div>
-          <div class="table-panel" id="table-panel" style="margin-top:14px">
-            <div class="empty"><div class="big">No results yet</div>Upload a deck and models, or run the demo to see flagged numbers.</div>
-          </div>
-          <div class="downloads" id="downloads" style="margin-top:14px"></div>
+        <div class="tbl-wrap" tabindex="0" role="region" aria-label="Coverage table">
+          <table class="tbl" id="covTable">
+            <caption class="visually-hidden">Every number read from the deck, with its tick and tie status</caption>
+            <thead><tr>
+              <th scope="col">Check</th><th scope="col" class="r">Slide</th><th scope="col" class="r">Deck</th><th scope="col">Evidence</th><th scope="col">Label</th>
+              <th scope="col">Status</th><th scope="col">Source cell</th><th scope="col" class="r">Model</th>
+              <th scope="col">Method</th><th scope="col" class="r">Conf.</th>
+            </tr></thead>
+            <tbody id="covBody"></tbody>
+          </table>
         </div>
-      </section>
-    </main>
-  </div>
+        <div class="more"><button type="button" class="btn small" id="covMore" hidden>Show more</button><span class="count-line" id="covNote"></span></div>
+      </div>
+
+      <div role="tabpanel" id="pane-ai" aria-labelledby="tab-ai" hidden>
+        <div class="toolbar">
+          <label class="visually-hidden" for="aiFilter">AI decision</label>
+          <select id="aiFilter">
+            <option value="">All AI decisions</option>
+            <option value="suggested">AI suggestions</option>
+            <option value="used">AI-assisted matches</option>
+            <option value="confirmed">Confirmed by reviewer</option>
+          </select>
+          <label class="visually-hidden" for="aiSearch">Search AI activity</label>
+          <input class="search" type="search" id="aiSearch" placeholder="Search AI activity" autocomplete="off">
+          <span class="count-line" id="aiCount" aria-live="polite"></span>
+        </div>
+        <div class="tbl-wrap" tabindex="0" role="region" aria-label="AI source decisions">
+          <table class="tbl">
+            <thead><tr>
+              <th scope="col" class="r">Slide</th><th scope="col">Metric</th><th scope="col" class="r">Deck</th>
+              <th scope="col">AI source</th><th scope="col" class="r">Model</th><th scope="col">AI decision</th>
+              <th scope="col">Current result</th><th scope="col">Evidence</th>
+            </tr></thead>
+            <tbody id="aiBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div role="tabpanel" id="pane-warnings" aria-labelledby="tab-warnings" hidden>
+        <div class="warn-list" id="warnFull"></div>
+      </div>
+    </section>
+  </main>
 </div>
 
-<script>
-const $ = (s) => document.querySelector(s);
-const files = { deck: null, models: [], old: null };
+<button type="button" class="scrim" id="scrim" tabindex="-1" aria-label="Close panel" hidden></button>
 
-function bindFile(inputId, boxId, txtId, multiple){
-  const input = document.getElementById(inputId);
-  const box = document.getElementById(boxId);
-  const txt = document.getElementById(txtId);
-  input.addEventListener('change', () => {
-    if (multiple){
-      files.models = Array.from(input.files);
-      txt.textContent = files.models.length ? files.models.map(f => f.name).join(', ') : 'Choose one or more models';
-    } else if (inputId === 'model-old'){
-      files.old = input.files[0] || null;
-      txt.textContent = files.old ? files.old.name : 'For staleness check';
-    } else {
-      files.deck = input.files[0] || null;
-      txt.textContent = files.deck ? files.deck.name : 'Choose pitchbook';
-    }
-    box.classList.toggle('has', !!txt.textContent && txt.textContent !== 'Choose pitchbook' && txt.textContent !== 'Choose one or more models' && txt.textContent !== 'For staleness check');
-  });
-}
-bindFile('deck','deck-box','deck-txt',false);
-bindFile('models','models-box','models-txt',true);
-bindFile('model-old','old-box','old-txt',false);
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" hidden>
+  <div class="drawer-head">
+    <div class="title">
+      <div id="drawerSev"></div>
+      <h3 id="drawerTitle"></h3>
+    </div>
+    <button type="button" class="icon-btn" id="drawerPrev" data-tip="Open the previous finding (K)" aria-label="Previous issue">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="drawerNext" data-tip="Open the next finding (J)" aria-label="Next issue">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="drawerClose" aria-label="Close" data-tip="Close the finding (Esc)">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-foot" id="drawerFoot"></div>
+</aside>
 
-function badge(sev){ return `<span class="badge ${sev}">${sev}</span>`; }
+<dialog class="evidence-dialog" id="evidenceDialog" aria-labelledby="evidenceTitle">
+  <header class="evidence-head">
+    <div>
+      <h2 id="evidenceTitle">Source preview</h2>
+      <p id="evidenceSubtitle" class="muted"></p>
+      <div id="evidenceStatus" role="status" aria-live="polite"></div>
+    </div>
+    <div class="evidence-head-actions">
+      <div id="evidenceCheck"></div>
+      <form method="dialog"><button class="btn small" type="submit" autofocus>Close preview</button></form>
+    </div>
+  </header>
+  <div class="evidence-panes">
+    <section aria-labelledby="slidePaneTitle">
+      <h3 id="slidePaneTitle">PowerPoint</h3>
+      <div class="evidence-preview-body" id="slidePreview" aria-live="polite"></div>
+    </section>
+    <section aria-labelledby="workbookPaneTitle">
+      <h3 id="workbookPaneTitle">Excel</h3>
+      <div class="source-tools" id="sourceTools" hidden>
+        <div class="evidence-actions">
+          <button type="button" class="btn small inspect-btn" id="findSources" data-tip="Search your Excel files for cells that could explain this figure">Find possible sources</button>
+          <button type="button" class="btn small" id="askSourceAI" data-tip="Ask your AI provider to compare masked candidate labels and record its suggestion" hidden>Identify and record source with AI</button>
+        </div>
+        <p class="note" id="sourceDiscoveryStatus" role="status"></p>
+      </div>
+      <div class="evidence-preview-body" id="workbookPreview" aria-live="polite"></div>
+    </section>
+  </div>
+</dialog>
 
-function renderCards(s){
-  $('#cards').innerHTML = `
-    <div class="card total reveal" style="--d:0s"><div class="num">${s.total}</div><div class="lbl">Total</div></div>
-    <div class="card high reveal" style="--d:.05s"><div class="num">${s.by_severity.high || 0}</div><div class="lbl">High</div></div>
-    <div class="card medium reveal" style="--d:.1s"><div class="num">${s.by_severity.medium || 0}</div><div class="lbl">Medium</div></div>
-    <div class="card low reveal" style="--d:.15s"><div class="num">${s.by_severity.low || 0}</div><div class="lbl">Low</div></div>`;
-}
+<dialog class="ai-source-dialog" id="aiSourceDialog" aria-labelledby="aiSourceTitle">
+  <h2 id="aiSourceTitle">AI source suggestions</h2>
+  <p class="note">Cloud providers receive masked labels and period names. Workbooks and cell values stay local.</p>
+  <div id="aiProviderMount"></div>
+  <p class="note" id="aiSourceError" role="status"></p>
+  <div class="review-actions">
+    <form method="dialog"><button type="submit" class="btn small">Cancel</button></form>
+    <button type="button" class="btn small primary" id="runAISourceReview">Ask AI for sources</button>
+  </div>
+</dialog>
 
-function renderTable(issues){
-  const panel = $('#table-panel');
-  if (!issues.length){
-    panel.innerHTML = `<div class="empty"><div class="big">Clean deck</div>No issues found — the deck reconciles with the model.</div>`;
-    return;
-  }
-  let rows = issues.map(i => `
-    <tr data-sev="${i.severity}" data-text="${(i.metric_key+' '+i.deck_value+' '+i.expected_value+' '+i.source_cell+' '+i.message).toLowerCase()}">
-      <td class="slide">${i.slide_number}</td>
-      <td>${badge(i.severity)}</td>
-      <td class="mono">${i.issue_type}</td>
-      <td class="mono">${i.metric_key || '—'}</td>
-      <td class="mono">${escapeHtml(i.deck_value)}</td>
-      <td class="mono">${escapeHtml(i.expected_value || '—')}</td>
-      <td class="mono">${escapeHtml(i.source_cell || '—')}</td>
-      <td class="msg">${escapeHtml(i.message)}</td>
-    </tr>`).join('');
-  panel.innerHTML = `<table><thead><tr>
-    <th>Slide</th><th>Sev</th><th>Type</th><th>Metric</th><th>Deck</th><th>Expected</th><th>Source</th><th>Message</th>
-  </tr></thead><tbody>${rows}</tbody></table>`;
-}
+<div class="modal" id="helpModal" role="dialog" aria-modal="true" aria-labelledby="helpTitle" hidden>
+  <div class="modal-head">
+    <h2 class="section-title" id="helpTitle">How to review a deck</h2>
+    <button type="button" class="icon-btn" id="helpClose" aria-label="Close">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <ol class="help-steps">
+    <li>Add the deck and its current Excel files, then select <strong>Start review</strong>.</li>
+    <li>Open a finding to read why it was flagged. Select <strong>Inspect</strong> to compare the slide and the workbook cell. A possible source still needs your review.</li>
+    <li>Record your decision and notes on the finding. Open <strong>Download reports and review notes</strong> to export the results.</li>
+  </ol>
+  <h3>Keyboard shortcuts</h3>
+  <dl class="shortcuts">
+    <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next and previous issue</dd>
+    <dt><kbd>Enter</kbd></dt><dd>Open the selected issue</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Close the panel</dd>
+    <dt><kbd>/</kbd></dt><dd>Search issues</dd>
+    <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Toggle high, medium, low</dd>
+    <dt><kbd>?</kbd></dt><dd>Open the review guide</dd>
+  </dl>
+</div>
 
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-function renderDownloads(runId){
-  const names = [['report.html','HTML report'],['report.xlsx','Excel report'],['report.json','JSON'],['deck_flagged.pptx','Annotated deck']];
-  $('#downloads').innerHTML = names.map(([f,l]) => `<a class="dl" href="/api/download/${runId}/${f}">↓ ${l}</a>`).join('');
-}
-
-function setBusy(b){
-  const btn = $('#run');
-  btn.innerHTML = b ? '<span class="spinner"></span> Running…' : 'Run review';
-  btn.disabled = b;
-  $('#demo').disabled = b;
-}
-
-async function run(endpoint, body){
-  setBusy(true);
-  $('#meta').textContent = 'running…';
-  try{
-    const res = await fetch(endpoint, { method:'POST', body });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Review failed');
-    renderCards(data.summary);
-    renderTable(data.issues);
-    renderDownloads(data.run_id);
-    $('#meta').textContent = `${data.issues.length} issue(s) · ${data.deck_numbers} deck numbers · ${data.model_values} model cells · ${data.elapsed.toFixed(2)}s`;
-  }catch(err){
-    $('#table-panel').innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
-    $('#meta').textContent = '';
-  }finally{
-    setBusy(false);
-  }
-}
-
-$('#run').addEventListener('click', () => {
-  if (!files.deck){ alert('Choose a deck (.pptx) first.'); return; }
-  if (!files.models.length){ alert('Choose at least one model (.xlsx).'); return; }
-  const fd = new FormData();
-  fd.append('deck', files.deck);
-  files.models.forEach(f => fd.append('models', f));
-  if (files.old) fd.append('model_old', files.old);
-  fd.append('llm', $('#llm').value);
-  fd.append('tolerance', $('#tolerance').value);
-  fd.append('annotate', $('#annotate').checked ? '1' : '0');
-  run('/api/review', fd);
-});
-
-$('#demo').addEventListener('click', () => run('/api/demo', new FormData()));
-
-$('#q').addEventListener('input', filterTable);
-$('#sev').addEventListener('change', filterTable);
-function filterTable(){
-  const term = $('#q').value.toLowerCase(), sev = $('#sev').value;
-  document.querySelectorAll('#table-panel tbody tr').forEach(tr => {
-    const okText = tr.dataset.text.includes(term);
-    const okSev = !sev || tr.dataset.sev === sev;
-    tr.style.display = (okText && okSev) ? '' : 'none';
-  });
-}
-</script>
+<template id="tpl-icon-warn"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg></template>
+<template id="tpl-icon-arrow"><svg class="icon arrow" viewBox="0 0 8 10" aria-hidden="true"><path d="M4 9V1M1 4l3-3 3 3"/></svg></template>
+<template id="tpl-icon-dl"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg></template>
+<template id="tpl-icon-x"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></template>
 </body>
 </html>

@@ -1,310 +1,283 @@
 # NumCheck
 
 Automated "number check" for investment banking pitchbooks. NumCheck reads a
-PowerPoint deck and the Excel model(s) behind it, reconciles every number, and
-produces a flagged report — the check an analyst does by hand at 2 a.m., done
-deterministically in under a second.
+PowerPoint deck and the Excel model(s) behind it, ties every number on every
+slide back to a source cell, and flags what is wrong, inconsistent or stale,
+with the slide, the source cell, the expected value and a suggested fix in the
+deck's own format.
 
-It catches the errors that Excel-to-PowerPoint linkers (Macabacus, UpSlide) miss,
-because those only work when everything was linked. Most decks contain pasted
-values, typed numbers, and charts that have drifted from the source. NumCheck
-does not require links — it re-derives the source of every number from labels
-and values.
+It works on pasted values, typed numbers and drifted charts. It does not need
+Macabacus/UpSlide links: it re-derives each number's source from labels,
+periods, units and table structure.
 
----
-
-## The problem
-
-Before a deck goes to a client, an analyst (and often an associate) prints it
-and checks every number by hand:
-
-- does it match the model,
-- does the same figure agree across pages,
-- are units and periods consistent,
-- are footnotes and sources right,
-- did anything go stale after the model was updated.
-
-One wrong number in front of a client is a career-level mistake.
-
-## What NumCheck does
-
-Given `deck.pptx` and `model.xlsx`:
-
-1. **Extracts every number from the deck** — text boxes, tables, chart data
-   (from embedded chart XML), and footnotes — with slide, shape, label, unit
-   (`$m`, `%`, `x`, `FY24`, `LTM`), and period.
-2. **Extracts labelled values from the model** — cell values with row/column
-   labels, sheet name, cell address, formula, and named ranges.
-3. **Matches deck numbers to model cells** using deterministic label similarity
-   (token-Jaccard with abbreviation expansion) plus value matching with
-   rounding tolerance. `1,234.56` in Excel matches `$1.2bn` and `1,235` in the
-   deck.
-4. **Runs consistency checks** — cross-slide drift, totals that don't sum,
-   percentages that don't reconcile, growth rates that don't match, and
-   unit/period inconsistencies.
-5. **Runs a staleness check** against a previous model version.
-6. **Emits** an HTML report, an Excel report, a machine-readable JSON report,
-   and an annotated copy of the deck with flagged numbers highlighted.
-
-**An LLM is used only to resolve ambiguous label matches. Every numeric
-comparison is deterministic code.**
+**Every numeric comparison is deterministic code.** An optional LLM can break
+ties between candidate cells by label meaning only; it never receives a number.
 
 ---
 
-## Installation
+## What it checks
 
-Requires Python 3.12+.
+| Check | Example |
+|---|---|
+| Model tie-out | `$2,450m` on slide 2, model has `$2,415m` at `Operating!C5` |
+| Sign and scale slips | `($45m)` vs `45`; `$45bn` vs `$45m` |
+| Stale numbers | Deck matches the previous model version, not the current one |
+| Wrong period | FY23 value shown under an FY24 header |
+| Cross-slide consistency | EBITDA is `$540m` on slide 3, `$512m` everywhere else |
+| Totals | Components don't sum to the total (rounding-aware); pies not summing to 100% |
+| Margins, multiples, growth, CAGR | `22.4%` margin but EBITDA / revenue on the slide gives `21.2%` |
+| Units and periods | FY24 vs CY24 labels for the same metric; `$bn` vs `$m` styles |
+| Footnotes | Data-period footnotes that contradict the slide; differing "as of" dates |
+| Source errors | Deck number mapped to a `#REF!` / `#DIV/0!` cell |
+
+Comparisons use **display precision**: `75%` covers 74.5%-75.5%, `$1.2bn`
+covers $1.15bn-$1.25bn. So `$6.2bn` against `$6,234m` passes, while `7%`
+against `10%` and `6x` against `8.9x` fail. `c.`, `~`, `>` and `up to` are
+honoured, and truncation can be allowed.
+
+Every run reports **coverage**: how many deck numbers were verified, by label
+or by value, and why the rest could not be. Anything that limits coverage is
+shown as a warning, never silently skipped: uncalculated formulas, numbers in
+pictures, charts without cached data, LLM failures, and encrypted or legacy
+files.
+
+## What it reads
+
+- **Deck:** text boxes (including prose like "revenue grew 9% to $1.2bn in
+  FY24"), tables (multi-row and merged headers, transposed layouts, units
+  columns), charts (bar, line, pie, scatter, bubble and combo, from the chart
+  cache with displayed precision), groups, placeholders and SmartArt. Footnotes,
+  sources and "as of" dates are read separately. Slide-level unit banners such
+  as "($ in millions, except per share data)" apply to unit-less numbers. OCR
+  of pictures is optional.
+- **Models:** banker layouts with title and units rows, blank spacer rows and
+  columns, numeric year headers (`2024`, `2025E`), multi-company column
+  groups, unit columns, number formats (`0.0%`, `0.0x`, `#,##0,,`, currency
+  codes), named ranges, hidden and backup sheets, error cells, and multiple
+  workbooks. Large workbooks are streamed.
+
+## Install
+
+For the portable Windows x64 build, extract the entire distribution ZIP and
+launch `NumCheck.exe`. Keep the console open while you work in the browser.
+The package includes the slide renderer, workbook review, OCR and an offline
+sample review. The application binds only to this computer.
+
+Source installs require Python 3.12+.
 
 ```bash
-git clone <this-repo> && cd numcheck
+git clone https://github.com/wxgmin/numcheck && cd numcheck
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
+.venv\Scripts\activate          # Windows
+source .venv/bin/activate       # macOS / Linux
+pip install -e ".[llm]"         # or just: pip install -e .
 ```
 
-Optional OCR fallback (numbers baked into slide images) additionally needs
-[LibreOffice](https://www.libreoffice.org/) and
-[Tesseract](https://github.com/tesseract-ocr/tesseract), plus
-`pip install pytesseract pillow`.
+Optional extras: `.[ocr]` (local OCR for embedded pictures),
+`.[crypto]` (password-protected files), `.[dev]` (tests and lint). Run
+`numcheck doctor` to see what is available.
 
----
+## Use
 
-## Quick start
-
-Generate a realistic demo (comps + DCF + operating model, a 12-slide deck with
-10 planted errors) and review it:
+### Web UI
 
 ```bash
-python -m numcheck demo --out-dir samples
-
-python -m numcheck review samples/deck.pptx \
-  --model samples/model.xlsx \
-  --model-old samples/model_old.xlsx \
-  --out-dir samples/report \
-  --annotate
+numcheck web --open            # http://127.0.0.1:8000
 ```
 
-Open `samples/report/report.html` (or `report.xlsx`) for the issue table and
-`samples/report/deck_flagged.pptx` for the annotated deck.
+Drop in the deck, the model(s) and optionally the previous model, then run.
+The workspace has:
 
-## Web UI
+- **Issues:** sortable and filterable, with a detail drawer showing expected
+  vs deck value, the tolerance in words, a suggested fix, provenance, and
+  review actions (resolve, false positive, notes) exportable as CSV.
+- **By slide:** issues grouped per slide.
+- **Coverage:** the full tick-and-tie log of every deck number.
+- **Source preview:** click a number in Issues or Coverage to see the original
+  PowerPoint slide next to a sheet extract around the cited cell, with its saved
+  value and formula. Inspect other candidate cells and the prior model when
+  available. Download either original from the viewer.
+- **Review handoff:** confirm a source in the viewer and export the findings,
+  notes, reviewed sources, effective settings, and SHA-256 fingerprints as JSON.
+  Confirmations record analyst judgment for that run alongside the calculated
+  findings.
+- **Warnings:** everything that limited coverage.
+- **Downloads:** HTML report, Excel report, JSON, and the annotated deck.
 
-For an interactive, no-CLI experience:
+**Review settings** contains rounding, base period, and tolerance help. For a
+source-driven review, enable **Require label evidence** to leave numeric
+coincidences unresolved. Review the Coverage and Warnings tabs before using
+the exported reports.
+
+NumCheck searches the current workbooks locally for all unresolved figures by
+default. Change **Search for possible sources automatically** in Review settings
+or run **Find possible sources for all** from the results. **Ask AI for sources**
+compares candidate labels across the review. Enabling **Use AI during reviews**
+always runs both steps, starting with local source search.
+
+A figure moves to Verified only when its source is distinct, its workbook label
+and period support the match, and the value reconciles at the slide's displayed
+precision. Inspect also lists related workbook cells and shows how their values
+compare with the slide. Results show the best available cell for each figure with
+candidates and Inspect opens it by default. **Identify and record source with AI** selects and
+opens the best-supported cell and records its workbook, sheet and address in
+the finding and review handoff. Other possible cells remain available in
+Inspect. This action can identify a source whose value differs when the label,
+period and scope support it. The provider receives masked labels and a local
+comparison category. Coverage and report downloads update when a source is verified.
+
+### Calculated figures
+
+When a rate or multiple has no dedicated model cell, NumCheck can calculate it
+from labelled Excel inputs. **Inspect** shows the calculation and lets you open
+each input cell.
+
+| Metric | Workbook inputs and calculation |
+|---|---|
+| Year-over-year and cumulative growth | Ending value ÷ starting value − 1 |
+| CAGR | (Ending value ÷ starting value) raised to 1 ÷ elapsed years, minus 1 |
+| Percentage-point or basis-point change | Current rate minus prior rate |
+| Gross, operating, EBITDA, net and free cash flow margins | Respective profit or cash flow ÷ revenue |
+| FCF conversion and effective tax rate | FCF ÷ EBITDA or tax expense ÷ pre-tax income |
+| ROE, ROA and ROIC | Net income ÷ average equity or average assets, or NOPAT ÷ average invested capital |
+| Dividend payout and yield | Dividends ÷ net income or dividends per share ÷ share price |
+| Valuation, leverage and interest coverage multiples | Relevant value, debt, price or EBITDA divided by its labelled base |
+| Offer premium | Offer price ÷ unaffected price − 1 |
+| Current and quick ratios | Current assets or quick assets ÷ current liabilities |
+| MOIC | Total investment value ÷ invested capital |
+
+Explicit annual-rate wording selects CAGR. Growth stated across a date range
+without annual-rate wording uses the cumulative change. A forecast CAGR with
+no start date can reconcile when the slide supplies independently verified
+actual and forecast figures for the same workbook series. If that calculation
+does not reconcile, the figure stays unresolved. Optional OCR can supply slide
+text for these checks. AI source assistance ranks labels, and NumCheck performs
+the calculations locally.
+
+Select a provider, enter its model ID and API key if
+needed, then use **Check connection**. The check sends a synthetic label pair
+and exercises the selected model. OpenAI and Anthropic use platform API
+keys. OpenRouter offers models from multiple vendors. Jev uses a Vercel AI
+Gateway key and can abstain on low-probability choices. Ollama uses a running
+local model. **Connect ChatGPT** opens OpenAI authorization for eligible
+ChatGPT plans, then loads the account’s models. NumCheck retains the
+connection in protected local storage and refreshes it when needed. Disconnect
+removes the local session and requests revocation. The OAuth
+connection is available at the app's local `127.0.0.1` address.
+ChatGPT via Codex uses the installed CLI's `codex login`
+session (`NUMCHECK_CODEX_BIN` can point to an executable outside PATH).
+The compatible endpoint reads its URL from the server configuration.
+Keys typed into the form are held in the tab and used only for the test or
+review request. Cloud assistance sends candidate labels and source identifiers,
+which can contain deal names. Add terms to redact or keep assistance off.
+
+Workbook previews run locally from saved workbook data. They show a bounded
+cell grid with common Excel number formats. The Windows ZIP includes LibreOffice
+and PDF rendering. For a source installation, install the `preview` extra
+(`pip install -e ".[llm,preview]"`) and make LibreOffice available on PATH or set
+`NUMCHECK_SOFFICE` to its executable. LibreOffice may lay out fonts or charts differently from
+PowerPoint. When text cannot be located uniquely, the viewer highlights its
+containing cell or object when available. Files remain downloadable from the
+viewer even when a preview is unavailable.
+
+The UI works offline, uses no external assets, and deletes uploaded files
+after two hours or on demand.
+
+### Build the Windows ZIP
+
+Use a Windows x64 Python environment. Create an administrative image from the
+official LibreOffice x64 MSI with `msiexec /a`, then locate the extracted
+directory containing `program`, `share` and `System64`.
+
+```powershell
+python -m pip install -e ".[llm,preview,ocr,crypto]" pyinstaller
+python tools/build_windows.py --libreoffice "C:\build\LibreOffice" --output "dist\NumCheck-Windows-x64.zip"
+```
+
+### CLI
 
 ```bash
-python -m numcheck web
-# open http://127.0.0.1:8000
+numcheck demo --out-dir samples
+numcheck review samples/Project_Keystone_Board_Materials.pptx --model samples/Keystone_Model_v4.xlsx \
+    --model-old samples/Keystone_Model_v3_prior.xlsx --out-dir samples/report
 ```
 
-Upload a deck and one or more models (or hit **Load demo**), run the review in
-the browser, filter the issue table, and download the reports plus the
-annotated deck. The UI ships the same `codex`/`openai`/`anthropic`/
-`openai-compatible`/`ollama` provider picker.
+| Option | Purpose |
+|---|---|
+| `--model` (repeatable) | Source workbooks (`.xlsx` / `.xlsm`) |
+| `--model-old` | Previous model, for staleness |
+| `--base-period FY24` | Period assumed for numbers that state none |
+| `--rounding round_or_truncate` | For teams that truncate instead of round |
+| `--tolerance 0.001` | Extra relative slack on top of display precision |
+| `--llm {off,openai,anthropic,openai-compatible,ollama,codex}` | Label tie-breaking only |
+| `--ocr` | Read numbers inside pictures |
+| `--password` | Encrypted files |
+| `--format json` | Machine-readable output on stdout |
+| `--fail-on high` | Exit code 1 when issues of that severity exist (CI) |
 
-The demo deliberately plants 10 errors of different types and the tool catches
-all of them with zero false positives:
+Exit codes: `0` ok, `1` issues at or above `--fail-on`, `2` input or usage
+error (with a hint), `3` unexpected error.
 
-| # | Planted error | Caught as |
-|---|---------------|-----------|
-| 1 | Exec-summary FY24 Revenue $2,450m vs model $2,415m | `mismatch` |
-| 2 | Revenue build total $2,450m vs components $2,420m | `sum_error` |
-| 3 | EBITDA $540m on comps slide vs $512m on DCF slide | `inconsistent_across_slides` + `mismatch` |
-| 4 | EBITDA margin 22.4% vs 512/2415 = 21.2% | `pct_reconcile` |
-| 5 | Revenue growth 8.5% vs (2415/2230 − 1) = 8.3% | `growth_reconcile` |
-| 6 | EV "$5.4bn" on one slide, "$5,400m" on another | `unit_period_mismatch` |
-| 7 | Same figure "FY24" vs "CY24" | `unit_period_mismatch` |
-| 8 | DCF implied EV $5.2bn matches old model, not new $5.8bn | `stale` |
-| 9 | "Total addressable market $48bn" with no source | `unmatched` |
-| 10 | Footnote "Q3 2025" vs deck period FY24 | `unit_period_mismatch` |
+Outputs in `--out-dir`:
 
-A control number (`Market Cap $6.2bn` vs model `$6,234m`) is **not** flagged,
-demonstrating the rounding tolerance.
-
-### Before / after
-
-**Before** — an analyst eyeballs 40 pages and hopes nothing drifted:
-
-```
-slide 2  FY24 Revenue .......... $2,450m   ← is that 2,415 or 2,450?
-slide 5  Total Revenue ......... $2,450m   ← do the segments even sum?
-slide 3  EBITDA ............... $540m      ← comps says 540, DCF says 512?
-slide 4  Implied EV ........... $5.2bn     ← did the model get updated?
-slide 9  TAM .................. $48bn      ← where did this even come from?
-```
-
-**After** — NumCheck points to the exact slide and cell:
-
-```
-mismatch   slide 2  $2,450m  expected $2,415m  source Operating!C5
-sum_error  slide 5  $2,450m  expected $2,420m
-mismatch   slide 3  $540m    expected $512m    source Operating!C6
-stale      slide 4  $5.2bn   expected $5,800m  source DCF!B4
-unmatched  slide 9  $48bn
-```
-
----
-
-## CLI reference
-
-```text
-python -m numcheck review DECK --model MODEL [--model MODEL ...] [options]
-python -m numcheck demo --out-dir DIR
-python -m numcheck init-config --out numcheck.toml
-```
-
-`review` options:
-
-| Flag | Description |
-|------|-------------|
-| `--model` (repeatable) | Source `.xlsx` model(s) |
-| `--model-old` | Previous model version for the staleness check |
-| `--out-dir` | Output directory (default `report`) |
-| `--annotate` / `--no-annotate` | Write `deck_flagged.pptx` (default on) |
-| `--config` | Path to `numcheck.toml` |
-| `--llm` | Provider: `off`, `openai`, `anthropic`, `openai-compatible`, `ollama` |
-| `--model-name` | Model name for the LLM provider |
-| `--llm-base-url` | Base URL for `openai-compatible` / `ollama` |
-| `--llm-api-key` | API key override |
-| `--tolerance` | Base relative tolerance (default `0.006`) |
-| `--ocr` | Enable optional OCR fallback for image numbers |
-
----
-
-## LLM providers (pluggable)
-
-The LLM is an optional, swappable inference layer used **only** for fuzzy label
-disambiguation. Numeric comparison never touches the LLM.
-
-Provider configuration lives in `numcheck.toml` under `[llm]`, and every field
-can be overridden with environment variables.
-
-```toml
-[llm]
-provider = "openai"        # off | openai | anthropic | openai-compatible | ollama | codex
-model = "gpt-4o-mini"
-base_url = ""              # for openai-compatible endpoints / ollama
-api_key = ""               # optional; otherwise read from the provider env var
-```
-
-| Provider | Env var | Notes |
-|----------|---------|-------|
-| `off` | — | Fully deterministic; ambiguous labels stay `ambiguous` |
-| `openai` | `OPENAI_API_KEY` | OpenAI API |
-| `anthropic` | `ANTHROPIC_API_KEY` | Claude (requires `anthropic` in requirements) |
-| `openai-compatible` | `OPENAI_API_KEY` / `NUMCHECK_LLM_API_KEY` | Any OpenAI-compatible endpoint (OpenRouter, Groq, LiteLLM, vLLM, …) |
-| `ollama` | — | Local Ollama (`http://localhost:11434/v1`) |
-| `codex` | — | Uses the **OpenAI Codex CLI** authenticated with your ChatGPT login (no API key) |
-
-**Use your existing ChatGPT subscription (no API key).** ChatGPT Plus/Pro does
-not expose a standard API key — that's a separate product. The supported way to
-use your subscription programmatically is the Codex CLI. Install it, sign in
-with your ChatGPT account, then set `provider = "codex"`:
-
-```bash
-npm install -g @openai/codex
-codex login          # choose "Sign in with ChatGPT"
-```
-
-NumCheck then shells out to `codex exec` for the disambiguation step. Model
-selection is controlled by the Codex CLI itself (`~/.codex/config.toml`). The
-numeric checks all still run without the LLM.
-
-Environment overrides:
-
-```bash
-export NUMCHECK_LLM_PROVIDER=openai-compatible
-export NUMCHECK_LLM_BASE_URL=http://localhost:4000/v1
-export NUMCHECK_LLM_MODEL=gpt-4o-mini
-export NUMCHECK_LLM_API_KEY=sk-...
-```
-
----
+- `report.html`: printable, self-contained.
+- `report.xlsx`: Summary, Issues, the full Coverage log, and Warnings.
+- `report.json`: everything, machine-readable.
+- `deck_flagged.pptx`: flagged numbers highlighted, numbered markers, issues
+  added to speaker notes, and summary slides at the end.
 
 ## Configuration
 
-`python -m numcheck init-config` writes a starter `numcheck.toml`. The main
-knobs:
+`numcheck init-config` writes a commented `numcheck.toml`. It is picked up
+from `--config`, `$NUMCHECK_CONFIG`, or the current directory, by both the CLI
+and the web UI. It covers:
 
-- `tolerance.relative` / `tolerance.absolute` — value-matching tolerance.
-  Rounding tolerance is computed per-number from its significant digits, so
-  `$1.2bn` still matches `1,234,560,000`.
-- `matching.value_weight` / `label_weight` / `ambiguity_band`.
-- `key_metrics` — metrics treated as high severity (Revenue, EBITDA, EPS, …).
-- `abbreviations` — label abbreviation expansion.
-- `unit_scales` — `k`/`m`/`mm`/`bn`/`b`/`t` scale factors.
+- tolerance and rounding mode
+- base period
+- sheets to exclude or deprioritise
+- key metrics
+- extra synonyms
+- LLM provider and model
+- strings to redact before anything is sent to an LLM
 
----
+## LLM providers (optional)
 
-## Outputs
+Off by default. When enabled, the LLM sees only labels, headers, sheet names
+and periods for ambiguous candidates, never numbers, and its choice must be
+one of the candidates. Failures are reported as warnings and the run stays
+deterministic.
 
-| File | Description |
-|------|-------------|
-| `report.html` | Self-contained, sortable/filterable issue table |
-| `report.xlsx` | Styled workbook: issues + summary sheets |
-| `report.json` | Machine-readable issues and summary |
-| `deck_flagged.pptx` | Copy of the deck with flagged numbers highlighted |
+| Provider | Credentials |
+|---|---|
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` (default model `claude-opus-5-5`) |
+| `openai-compatible` | `--llm-base-url` + `--model-name` (OpenRouter, LiteLLM, Groq, ...) |
+| `ollama` | Local, `http://localhost:11434/v1` |
+| `codex` | `codex login` with a ChatGPT subscription; no API key needed |
 
-Every issue has: slide number, deck value, expected value, source cell,
-issue type, severity, and a human-readable message.
-
----
-
-## Architecture
-
-```
-numcheck/
-  extraction/   pptx (text/tables/charts/OCR) + xlsx (labelled cells + named ranges)
-  matching/     normalizer, value matching, label matching, pipeline
-  llm/          pluggable provider abstraction (off/openai/anthropic/openai-compatible/ollama)
-  checks/       consistency, arithmetic, units/periods, staleness
-  report/       html, excel, json, annotated deck
-  demo/         realistic comps + DCF model and planted-error deck
-```
-
-Matching is **label-first**: the best label match identifies the intended source
-cell, then the value is checked deterministically. Value proximity is used only
-to break ties among cells that share the same label. This is what makes a wrong
-number surface as a `mismatch` (with its source cell) rather than a silent
-`unmatched`.
-
----
-
-## Tests
+## Development
 
 ```bash
+pip install -e ".[llm,dev]"
 python -m pytest -q
+ruff check numcheck tests
 ```
 
-The integration test regenerates the demo and asserts all 10 planted errors are
-caught and the rounding control is clean.
+`docs/DESIGN.md` lists the real-world hurdles (negatives, ranges, banners,
+per-share exceptions, banker layouts, uncached formulas, period spellings,
+qualifier conflicts, and more), with the solution and fallback for each.
 
----
+## Limitations
 
-## Demo GIF
-
-To record a short demo GIF, use your preferred terminal recorder, for example:
-
-```bash
-# asciinema (terminal cast -> gif)
-asciinema rec demo.cast
-# ... run the demo + review commands above ...
-# then convert with agg:
-agg demo.cast assets/demo.gif
-```
-
-Place the result at `assets/demo.gif`. A text transcript of the before/after is
-included above so the demo remains useful without the GIF.
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and pull requests welcome.
+- Numbers inside embedded raster pictures need **Read numbers in images** or
+  `--ocr`. RapidOCR runs locally and is included in the Windows download.
+  Source installations can add it with `pip install -e ".[ocr]"`. OCR results are
+  lower confidence.
+- Workbooks saved by code without calculated values need to be opened and
+  saved in Excel. NumCheck tries a LibreOffice recalculation when available.
+- Legacy `.ppt` / `.xls` / `.xlsb` must be converted to `.pptx` / `.xlsx`.
+- European number formatting (`1.234,5`) is not parsed yet.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT
